@@ -12,9 +12,10 @@ wheels/
 # 环境变量（含密钥，禁止提交）
 .env
 
-# 数据集（体积大，按需下载，不入库；但保留下载说明）
+# 数据集（体积大，按需下载，不入库；但保留下载说明与脚本）
 dataset/*
 !dataset/DOWNLOAD.md
+!dataset/download_azure_v2.sh
 
 # IDE / 工具
 .trae/
