@@ -1,0 +1,26 @@
+[project]
+name = "graph-rag"
+version = "0.1.0"
+description = "Graph-RAG 时态知识图谱故障根因推理系统 - 推免考核项目"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # 知识图谱层
+    "graphiti-core[neo4j]>=0.29.2",
+    "neo4j>=6.2.0",
+    # 数据模型与校验
+    "pydantic>=2.13.4",
+    "python-dotenv>=1.2.2",
+    # LLM 调用
+    "openai>=1.0",
+    "httpx>=0.27",
+    # 数据处理
+    "pandas>=2.0",
+    "numpy>=1.24",
+    # 后端 API
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    # 评估工具
+    "scikit-learn>=1.3",
+    "tqdm>=4.66",
+]
