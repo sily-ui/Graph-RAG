@@ -58,6 +58,7 @@ def build_graphiti_client(config: Any | None = None):
     from graphiti_core import Graphiti
     from graphiti_core.llm_client import OpenAIClient
     from graphiti_core.llm_client.config import LLMConfig
+    from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
     import openai
 
     # 构建 LLM 客户端（用生成 LLM 配置）
@@ -73,12 +74,22 @@ def build_graphiti_client(config: Any | None = None):
     )
     llm_client = OpenAIClient(config=llm_config, client=openai_client)
 
+    # 显式构造 embedder，复用 GEN LLM 的 Key/URL（兼容 OpenAI/DeepSeek/OpenRouter）
+    # graphiti-core 默认会创建 OpenAIEmbedder 读 OPENAI_API_KEY，必须显式传 config 避免缺 key 报错
+    embedder_config = OpenAIEmbedderConfig(
+        api_key=config.gen_llm.api_key,
+        base_url=config.gen_llm.base_url,
+        embedding_model="text-embedding-3-small",
+    )
+    embedder = OpenAIEmbedder(config=embedder_config)
+
     # 构建 Graphiti 实例
     graphiti = Graphiti(
         uri=config.neo4j.uri,
         user=config.neo4j.user,
         password=config.neo4j.password,
         llm_client=llm_client,
+        embedder=embedder,
     )
 
     return graphiti
