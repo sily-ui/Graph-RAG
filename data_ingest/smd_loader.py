@@ -217,16 +217,28 @@ class SMDLoader:
 
     # -------------------- 底层文件读取 --------------------
 
+    def _detect_delimiter(self, path: Path) -> str:
+        """自动检测分隔符：SMD 原版是 tab，部分镜像/转存版本是逗号。
+        读首行统计 tab/逗号数量，多的为准。
+        """
+        with open(path, "r", encoding="utf-8") as f:
+            first_line = f.readline()
+        tab_count = first_line.count("\t")
+        comma_count = first_line.count(",")
+        return "\t" if tab_count >= comma_count else ","
+
     def _load_matrix(self, path: Path, max_rows: int | None = None) -> np.ndarray:
-        """加载 tab 分隔的 38 列数值矩阵。
+        """加载 38 列数值矩阵（自动检测 tab/逗号分隔）。
 
         单行文件会被 np.loadtxt 降为 1D，调用方需 atleast_2d。
         """
-        return np.loadtxt(path, delimiter="\t", max_rows=max_rows)
+        delimiter = self._detect_delimiter(path)
+        return np.loadtxt(path, delimiter=delimiter, max_rows=max_rows)
 
     def _load_labels(self, path: Path, max_rows: int | None = None) -> np.ndarray:
-        """加载单列 0/1 标签为 int8 数组。"""
-        arr = np.loadtxt(path, delimiter="\t", max_rows=max_rows)
+        """加载单列 0/1 标签为 int8 数组（自动检测 tab/逗号分隔）。"""
+        delimiter = self._detect_delimiter(path)
+        arr = np.loadtxt(path, delimiter=delimiter, max_rows=max_rows)
         return np.atleast_1d(arr).astype(np.int8)
 
     def _load_interp_labels(self, path: Path) -> list[list[int]]:
