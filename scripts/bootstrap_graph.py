@@ -1,19 +1,34 @@
 r"""图谱构建脚本 —— 端到端把合成数据/真实数据灌入 Neo4j。
 
+支持四种数据源（``--source``）：
+    - synthetic : 合成 VM 时序（默认，SyntheticDataGenerator）
+    - azure     : Azure V2 真实 CSV（AzureTraceLoader，需配合 --csv）
+    - smd       : SMD Server Machine Dataset（SMDLoader，需配合 --smd-dir）
+    - gaia      : GAIA MicroSS 故障注入数据集（GAIALoader，需配合 --gaia-dir）
+
 运行方式（在项目根目录）：
-    python scripts/bootstrap_graph.py                       # 默认合成数据 50 VM
-    python scripts/bootstrap_graph.py --vms 100             # 指定 VM 数量
-    python scripts/bootstrap_graph.py --csv path/to.csv    # 用真实 Azure V2 CSV
-    python scripts/bootstrap_graph.py --dry-run             # 只构建 episode 不写入图库
+    # 合成数据（默认）
+    python scripts/bootstrap_graph.py --vms 100 --dry-run
+
+    # Azure V2 真实 CSV
+    python scripts/bootstrap_graph.py --source azure --csv dataset/vmtablev2_000000000000.csv --vms 50
+    python scripts/bootstrap_graph.py --csv path/to.csv    # 旧用法，缺省 --source 自动推断为 azure
+
+    # SMD 真实数据
+    python scripts/bootstrap_graph.py --source smd --smd-dir dataset/ServerMachineDataset --vms 5 --dry-run
+
+    # GAIA 真实数据
+    python scripts/bootstrap_graph.py --source gaia --gaia-dir dataset/GAIA-DataSet --dry-run
+
+    python scripts/bootstrap_graph.py --verify             # 写入后查询图库统计
 
 流程：
-    1. 加载 VM 时序（合成或真实 CSV）
-    2. 异常检测（IQR 法）
-    3. 故障事件抽取
-    4. 因果骨架匹配
-    5. episode 构建
-    6. Graphiti 写入 Neo4j
-    7. 验证图谱统计（节点/关系数）
+    1. 加载数据源（合成时序 / Azure CSV / SMD 多维时序 / GAIA 故障注入）
+    2. 故障事件抽取（合成/Azure 走 IQR 异常检测；SMD/GAIA 由 loader 直接给出）
+    3. 因果骨架匹配
+    4. episode 构建
+    5. Graphiti 写入 Neo4j
+    6. 验证图谱统计（节点/关系数）
 
 验证项（对应实现方案 Verification Steps #2）：
     - 实体数 ≥ 50
@@ -35,7 +50,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from data_ingest.azure_trace_loader import AzureTraceLoader
 from data_ingest.episode_builder import EpisodeBuilder
 from data_ingest.fault_event_extractor import FaultEventExtractor
+from data_ingest.gaia_loader import GAIALoader, download_gaia
 from data_ingest.models import FaultEvent, GraphBuildStats
+from data_ingest.smd_loader import SMDLoader, download_smd
 from data_ingest.synthetic_data import generate_vm_batch
 
 
@@ -74,6 +91,44 @@ def build_episodes_offline(
         print(f"  共构建 {len(episodes)} 个 episode (含 {len(episodes) - len(all_events)} 骨架)")
 
     return episodes, all_events
+
+
+def build_episodes_from_events(
+    events: list[FaultEvent],
+    episode_builder: EpisodeBuilder,
+    include_skeletons: bool = True,
+    progress: bool = True,
+) -> tuple[list, list[FaultEvent]]:
+    """从已有的 FaultEvent 列表构建 episode（用于 SMD/GAIA 等直出事件的数据源）。
+
+    与 build_episodes_offline 的区别：跳过 VM 时序加载与 IQR 异常检测，
+    因为 SMD 用 interpretation_label 抽窗口、GAIA 直接给故障注入记录，
+    两者在 loader 内部已生成项目统一的 FaultEvent。
+
+    Parameters
+    ----------
+    events : list[FaultEvent]
+        loader 已抽取的故障事件列表
+    episode_builder : EpisodeBuilder
+        episode 构建器
+    include_skeletons : bool
+        是否在结果前追加因果骨架 episode
+    progress : bool
+        是否打印进度
+    """
+    if progress:
+        print(f"  共 {len(events)} 个故障事件（由 loader 直接抽取）")
+
+    episodes = episode_builder.build_from_fault_events(events)
+    if include_skeletons:
+        skeletons = episode_builder.build_skeleton_episodes()
+        episodes = skeletons + episodes
+
+    if progress:
+        skeleton_count = len(episodes) - len(events)
+        print(f"  共构建 {len(episodes)} 个 episode (含 {skeleton_count} 骨架)")
+
+    return episodes, events
 
 
 async def write_episodes_async(episodes: list, concurrency: int = 3) -> GraphBuildStats:
@@ -136,11 +191,25 @@ def verify_graph_stats() -> dict:
     return stats
 
 
-def print_stats(episodes: list, events: list[FaultEvent], stats: GraphBuildStats, elapsed: float) -> None:
-    """打印构建结果统计。"""
+def print_stats(
+    episodes: list,
+    events: list[FaultEvent],
+    stats: GraphBuildStats,
+    elapsed: float,
+    source_dataset: str = "synthetic",
+) -> None:
+    """打印构建结果统计。
+
+    Parameters
+    ----------
+    source_dataset : str
+        数据来源标识（synthetic/azure_v2/smd/gaia），从首个事件的 source_dataset
+        字段或 --source 参数推导得到
+    """
     print("\n" + "=" * 60)
     print("  图谱构建完成")
     print("=" * 60)
+    print(f"  数据来源: {source_dataset}")
     print(f"  故障事件数: {len(events)}")
     print(f"  episode 总数: {stats.total_episodes}")
     print(f"  写入成功: {stats.episodes_written}")
@@ -161,64 +230,113 @@ def print_stats(episodes: list, events: list[FaultEvent], stats: GraphBuildStats
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Graph-RAG 图谱构建脚本（合成数据 / Azure V2 CSV）",
+        description="Graph-RAG 图谱构建脚本（支持 synthetic / azure / smd / gaia 四种数据源）",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
-        "--vms", type=int, default=50,
-        help="合成 VM 数量（默认 50）",
+
+    # ==================== 数据源选择 ====================
+    src_group = parser.add_argument_group("数据源选择")
+    src_group.add_argument(
+        "--source", choices=["azure", "smd", "gaia", "synthetic"], default=None,
+        help="数据源类型。不指定时按 --csv 是否存在自动推断（有 --csv → azure，否则 synthetic）",
     )
-    parser.add_argument(
+    src_group.add_argument(
         "--csv", type=str, default=None,
-        help="Azure V2 CSV 文件路径（不指定则用合成数据）",
+        help="Azure V2 长格式 CSV 路径（仅 --source azure 使用）",
     )
-    parser.add_argument(
+    src_group.add_argument(
+        "--smd-dir", type=str, default=None,
+        help="SMD 解压根目录（含 train/test/test_label/interpretation_label 子目录，仅 --source smd 使用）",
+    )
+    src_group.add_argument(
+        "--gaia-dir", type=str, default=None,
+        help="GAIA-DataSet 解压根目录（含 MicroSS/ 子目录，仅 --source gaia 使用）",
+    )
+
+    # ==================== 通用参数 ====================
+    common_group = parser.add_argument_group("通用参数")
+    common_group.add_argument(
+        "--vms", type=int, default=50,
+        help="合成 VM 数量（synthetic）/ Azure CSV 抽样上限 / SMD 加载机器数",
+    )
+    common_group.add_argument(
         "--cluster", type=str, default="cluster_A",
-        help="集群标识（默认 cluster_A）",
+        help="集群标识（仅 synthetic / azure 生效）",
     )
-    parser.add_argument(
+    common_group.add_argument(
         "--observation-days", type=int, default=7,
-        help="合成数据观察期天数（默认 7）",
+        help="合成数据观察期天数（仅 synthetic 生效）",
     )
-    parser.add_argument(
+    common_group.add_argument(
         "--fault-rate", type=float, default=0.2,
-        help="合成数据故障率（默认 0.2）",
+        help="合成数据故障率（仅 synthetic 生效）",
     )
-    parser.add_argument(
+    common_group.add_argument(
         "--concurrency", type=int, default=3,
-        help="Graphiti 写入并发数（默认 3）",
+        help="Graphiti 写入并发数",
     )
-    parser.add_argument(
+    common_group.add_argument(
         "--no-skeletons", action="store_true",
         help="不写入因果骨架 episode",
     )
-    parser.add_argument(
+    common_group.add_argument(
         "--dry-run", action="store_true",
         help="只构建 episode 不写入图库",
     )
-    parser.add_argument(
+    common_group.add_argument(
         "--verify", action="store_true",
         help="写入后查询图库统计验证",
     )
     args = parser.parse_args()
+
+    # ---- 向后兼容：缺省 --source 时按 --csv 推断 ----
+    if args.source is None:
+        args.source = "azure" if args.csv else "synthetic"
+
+    # ---- 数据源参数校验 ----
+    if args.source == "azure" and not args.csv:
+        print("[ERROR] --source azure 必须配合 --csv <path> 使用")
+        return 1
+    if args.source == "smd" and not args.smd_dir:
+        print("[ERROR] --source smd 必须配合 --smd-dir <path> 使用")
+        print("  SMD 数据集获取方式：")
+        print("    git clone https://github.com/NetManAIOps/OmniAnomaly.git tmp_omni")
+        print("    mv tmp_omni/ServerMachineDataset dataset/ServerMachineDataset")
+        print("    rm -rf tmp_omni")
+        return 1
+    if args.source == "gaia" and not args.gaia_dir:
+        print("[ERROR] --source gaia 必须配合 --gaia-dir <path> 使用")
+        print("  GAIA 数据集获取方式：")
+        print("    git clone https://github.com/CloudWise-OpenSource/GAIA-DataSet.git dataset/GAIA-DataSet")
+        return 1
 
     start_time = time.time()
 
     print("=" * 60)
     print("  Graph-RAG 图谱构建")
     print("=" * 60)
+    print(f"  数据源: {args.source}")
 
-    # ---- 1. 加载 VM 时序 ----
-    print("\n--- 1. 加载 VM 时序 ---")
-    if args.csv:
-        csv_path = Path(args.csv)
+    # ---- 1. 加载数据源 ----
+    print(f"\n--- 1. 加载数据源 ({args.source}) ---")
+    # 标识本次构建的数据来源，用于 stats 输出
+    source_dataset: str = args.source
+    # 走 VM 时序管线的数据源（synthetic / azure），返回 vms 列表
+    vms: list | None = None
+    # 直出 FaultEvent 的数据源（smd / gaia），返回 events 列表
+    prebuilt_events: list[FaultEvent] | None = None
+
+    if args.source == "azure":
+        csv_path = Path(args.csv)  # type: ignore[arg-type]
         if not csv_path.exists():
             print(f"[ERROR] CSV 文件不存在: {csv_path}")
             return 1
         loader = AzureTraceLoader(cluster_id=args.cluster, detection_method="iqr")
-        # 用真实 Azure V2 长格式加载
         vms = list(loader.load_long(csv_path, max_vms=args.vms))
-        print(f"  从长格式 CSV 加载 {len(vms)} 个 VM")
-    else:
+        print(f"  从长格式 CSV 加载 {len(vms)} 个 VM (cluster={args.cluster})")
+        source_dataset = "azure_v2"
+
+    elif args.source == "synthetic":
         print(f"  生成 {args.vms} 个合成 VM (cluster={args.cluster}, "
               f"days={args.observation_days}, fault_rate={args.fault_rate})")
         vms = generate_vm_batch(
@@ -229,18 +347,82 @@ def main():
             seed=42,
         )
         print(f"  合成完成，其中 {sum(1 for v in vms if v.is_deleted)} 个 VM 被删除")
+        source_dataset = "synthetic"
 
-    # ---- 2. 离线构建 episode ----
-    print("\n--- 2. 异常检测 + 事件抽取 + episode 构建 ---")
-    fault_extractor = FaultEventExtractor()
+    elif args.source == "smd":
+        smd_dir = Path(args.smd_dir)  # type: ignore[arg-type]
+        if not smd_dir.exists():
+            print(f"[ERROR] SMD 数据目录不存在: {smd_dir}")
+            download_smd(str(smd_dir))
+            return 1
+        smd_loader = SMDLoader(str(smd_dir))
+        machines = smd_loader.list_machines()
+        if not machines:
+            print(f"[ERROR] SMD 数据目录 {smd_dir} 下未发现任何机器（train/ 子目录为空）")
+            download_smd(str(smd_dir))
+            return 1
+        print(f"  发现 {len(machines)} 台机器，按 --vms={args.vms} 限制加载数量")
+        prebuilt_events = []
+        loaded_count = 0
+        for entity in smd_loader.load_all(max_machines=args.vms):
+            loaded_count += 1
+            windows = len(entity.anomaly_windows)
+            print(f"  [{loaded_count}/{min(args.vms, len(machines))}] "
+                  f"machine={entity.machine_id} group={entity.group_id} "
+                  f"anomaly_windows={windows}")
+            events = smd_loader.extract_fault_events(entity)
+            prebuilt_events.extend(events)
+        print(f"  共加载 {loaded_count} 台机器，抽取 {len(prebuilt_events)} 个故障事件")
+        source_dataset = "smd"
+
+    elif args.source == "gaia":
+        gaia_dir = Path(args.gaia_dir)  # type: ignore[arg-type]
+        if not gaia_dir.exists():
+            print(f"[ERROR] GAIA 数据目录不存在: {gaia_dir}")
+            download_gaia(str(gaia_dir))
+            return 1
+        gaia_loader = GAIALoader(str(gaia_dir))
+        if not gaia_loader.run_dir.is_dir():
+            print(f"[ERROR] 未找到 MicroSS/run 子目录：{gaia_loader.run_dir}")
+            download_gaia(str(gaia_dir))
+            return 1
+        print(f"  加载故障注入记录 (run_dir={gaia_loader.run_dir})")
+        injections = gaia_loader.load_fault_injections()
+        print(f"  共 {len(injections)} 条故障注入记录")
+        if not injections:
+            print("[WARN] 未加载到任何 GAIA 故障注入记录（run 目录可能为空或非 MicroSS 结构）")
+            download_gaia(str(gaia_dir))
+            return 0
+        prebuilt_events = gaia_loader.extract_fault_events(injections)
+        print(f"  转换为 {len(prebuilt_events)} 个 FaultEvent")
+        source_dataset = "gaia"
+
+    else:  # 理论上不可达（argparse choices 已限制）
+        print(f"[ERROR] 未知数据源: {args.source}")
+        return 1
+
+    # ---- 2. episode 构建 ----
+    print("\n--- 2. episode 构建 ---")
     episode_builder = EpisodeBuilder()
-    episodes, events = build_episodes_offline(
-        vms=vms,
-        fault_extractor=fault_extractor,
-        episode_builder=episode_builder,
-        include_skeletons=not args.no_skeletons,
-        progress=True,
-    )
+    if vms is not None:
+        # synthetic / azure：走 VM 时序 + IQR 异常检测 + 事件抽取
+        fault_extractor = FaultEventExtractor()
+        episodes, events = build_episodes_offline(
+            vms=vms,
+            fault_extractor=fault_extractor,
+            episode_builder=episode_builder,
+            include_skeletons=not args.no_skeletons,
+            progress=True,
+        )
+    else:
+        # smd / gaia：loader 已直出 FaultEvent，跳过异常检测
+        assert prebuilt_events is not None
+        episodes, events = build_episodes_from_events(
+            events=prebuilt_events,
+            episode_builder=episode_builder,
+            include_skeletons=not args.no_skeletons,
+            progress=True,
+        )
 
     if not episodes:
         print("\n[WARN] 未构建任何 episode（可能无故障事件）")
@@ -249,10 +431,15 @@ def main():
     if args.dry_run:
         print("\n[dry-run] 跳过图库写入")
         elapsed = time.time() - start_time
-        print_stats(episodes, events, GraphBuildStats(
-            total_episodes=len(episodes),
-            total_fault_events=len(events),
-        ), elapsed)
+        print_stats(
+            episodes, events,
+            GraphBuildStats(
+                total_episodes=len(episodes),
+                total_fault_events=len(events),
+            ),
+            elapsed,
+            source_dataset=source_dataset,
+        )
         # 打印第一个 episode 示例
         print("\n首 episode 示例:")
         print("-" * 60)
@@ -268,7 +455,7 @@ def main():
     stats.total_fault_events = len(events)
 
     elapsed = time.time() - start_time
-    print_stats(episodes, events, stats, elapsed)
+    print_stats(episodes, events, stats, elapsed, source_dataset=source_dataset)
 
     # ---- 4. 验证 ----
     if args.verify:

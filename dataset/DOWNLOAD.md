@@ -1,73 +1,203 @@
-# Azure Public Dataset V2 下载说明
+# 数据集下载说明
 
-本目录用于存放 Azure V2 真实数据集，**不入库 git**（已在 .gitignore 排除）。
+本项目支持四种数据源，按与「服务器集群故障排查」主题的匹配度推荐顺序：
 
-## 下载步骤
+| 数据源 | 匹配度 | 体积 | 含故障标注 | 含集群拓扑 | 国内下载 |
+|---|---|---|---|---|---|
+| **SMD** | ★★★★★ | 200MB | ✅ 异常标签 | ✅ 28 台集群 | ✅ GitHub |
+| **GAIA** | ★★★★★ | 2-5GB | ✅ 故障注入记录 | ✅ trace 调用链 | ✅ GitHub |
+| Azure V2 | ★★★ | 1.2GB/分片 | ❌ 仅 vm_deleted | ❌ 独立 VM | ⚠️ 较慢 |
+| 合成数据 | - | 0 | ✅ 自带 | ❌ | ✅ 无需下载 |
 
-### 1. 下载链接清单
+**强烈推荐**：用 SMD + GAIA 跑考核演示。Azure V2 仅作对比 baseline。
 
-```bash
-# 下载 Azure V2 的文件 URL 清单（198 个分片）
-curl -L -o azure_v2_links.txt \
-  https://raw.githubusercontent.com/Azure/AzurePublicDataset/master/AzurePublicDatasetV2.txt
+---
 
-# 查看前几个链接
-head -n 3 azure_v2_links.txt
-```
+## 1. SMD（Server Machine Dataset）— 推荐主数据源
 
-### 2. 下载分片（推荐 1-3 个，每个约 1.2GB）
+28 台服务器 × 38 维指标 × 5 周时序，含异常标签与维度贡献标注。来自某互联网公司真实集群。
 
-```bash
-# 下载前 2 个分片
-head -n 2 azure_v2_links.txt | xargs -n 1 -P 2 curl -L -O
-```
-
-下载后的文件名形如 `vmtablev2_000000000000.csv`、`vmtablev2_000000000001.csv`。
-
-### 3. 数据格式
-
-Azure V2 是**长格式** CSV（无表头，20 列）：
-
-| 列号 | 字段 | 说明 |
-|---|---|---|
-| 1 | subscription_id | 订阅 ID |
-| 6 | vm_id | VM ID |
-| 7 | vm_created | VM 创建时间戳（秒） |
-| 8 | vm_deleted | VM 删除时间戳（秒，0=未删除） |
-| 11 | vm_category | VM 类别 |
-| 13 | vcore_bucket | vCPU 桶 |
-| 14 | memory_gb_bucket | 内存桶 |
-| 15 | timestamp | 5 分钟时间戳 |
-| 18 | cpu_avg_5min | 该 5 分钟内平均 CPU |
-
-### 4. 验证下载
+### 下载
 
 ```bash
-# 查看文件大小
-ls -lh vmtablev2_*.csv
+cd ~/Graph-RAG/dataset
 
-# 查看前 3 行
-head -n 3 vmtablev2_000000000000.csv
+# 方式 A：完整 clone（推荐，含全部 28 台机器数据）
+git clone https://github.com/NetManAIOps/OmniAnomaly.git tmp_omni
+mv tmp_omni/ServerMachineDataset .
+rm -rf tmp_omni
+
+# 方式 B：GitHub 加速（如果直连慢）
+git clone https://ghproxy.com/https://github.com/NetManAIOps/OmniAnomaly.git tmp_omni
+mv tmp_omni/ServerMachineDataset .
+rm -rf tmp_omni
 ```
 
-### 5. 用本项目的 loader 加载
+### 目录结构
+
+```
+dataset/ServerMachineDataset/
+├── train/                    # 训练集时序（无标签）
+│   ├── machine-1-1.txt
+│   ├── machine-1-2.txt
+│   └── ... (共 28 台)
+├── test/                     # 测试集时序
+├── test_label/               # 测试集异常标签（0/1）
+└── interpretation_label/     # 每个异常窗口的贡献维度
+```
+
+每个 `.txt` 文件：每行 38 个数值（tab 分隔），1 分钟一条，无表头。
+
+### 加载
 
 ```bash
 cd ~/Graph-RAG
+
+# dry-run 验证（前 3 台机器）
 python scripts/bootstrap_graph.py \
+  --source smd \
+  --smd-dir dataset/ServerMachineDataset \
+  --vms 3 \
+  --dry-run
+
+# 真实写入 Neo4j
+python scripts/bootstrap_graph.py \
+  --source smd \
+  --smd-dir dataset/ServerMachineDataset \
+  --vms 5 \
+  --verify
+```
+
+---
+
+## 2. GAIA（Generic AIOps Atlas）— 推荐辅助数据源
+
+CloudWise 开源的微服务系统数据集，含 metric / trace / business / run 四类。**run 目录含故障注入记录**（memory/cpu/network/disk anomalies），是核心创新点的关键数据源。
+
+### 下载
+
+```bash
+cd ~/Graph-RAG/dataset
+
+# 方式 A：完整 clone
+git clone https://github.com/CloudWise-OpenSource/GAIA-DataSet.git
+
+# 方式 B：GitHub 加速
+git clone https://ghproxy.com/https://github.com/CloudWise-OpenSource/GAIA-DataSet.git
+```
+
+### 目录结构
+
+```
+dataset/GAIA-DataSet/
+├── MicroSS/
+│   ├── metric/          # 单节点单指标时序 CSV（timestamp,value）
+│   ├── trace/           # 调用链 CSV（含 trace_id/span_id/parent_id）
+│   ├── business/        # 业务日志
+│   └── run/             # 故障注入记录 + 系统日志（关键）
+└── Companion_Data/
+    ├── metric_detection/  # 含异常标签的指标（timestamp,value,label）
+    ├── metric_forecast/
+    └── log/
+```
+
+### 加载
+
+```bash
+cd ~/Graph-RAG
+
+# dry-run 验证（只构建 episode 不写入）
+python scripts/bootstrap_graph.py \
+  --source gaia \
+  --gaia-dir dataset/GAIA-DataSet \
+  --dry-run
+
+# 真实写入 Neo4j
+python scripts/bootstrap_graph.py \
+  --source gaia \
+  --gaia-dir dataset/GAIA-DataSet \
+  --verify
+```
+
+---
+
+## 3. Azure V2（Public Dataset V2）— baseline 对比
+
+微软 Azure 公有云 VM 时序数据，每行 = 一个 VM × 5 分钟。仅 CPU 单维度，无故障标签，作为 baseline 对比用。
+
+### 下载
+
+```bash
+cd ~/Graph-RAG/dataset
+
+# 用项目自带的下载脚本（含多源容错 + 断点续传）
+bash download_azure_v2.sh 2
+```
+
+或手动下载：
+
+```bash
+# 直接从 Azure Blob Storage 下载（稳定公开）
+curl -L -C - -o vmtablev2_000000000000.csv \
+  https://azurepublicdatasetv2.blob.core.windows.net/vmtablev2/vmtablev2_000000000000.csv
+```
+
+每个分片约 1.2GB，建议下载 1-2 个分片即可。
+
+### 加载
+
+```bash
+cd ~/Graph-RAG
+
+python scripts/bootstrap_graph.py \
+  --source azure \
   --csv dataset/vmtablev2_000000000000.csv \
   --vms 50 \
   --dry-run
 ```
 
-`--dry-run` 先验证加载流程，无误后去掉 `--dry-run` 真实写入 Neo4j。
+---
 
-## 数据量建议
+## 4. 合成数据 — 开发调试用
 
-| 用途 | 文件数 | 大小 | 预计 VM 数 |
+无需下载，由 `data_ingest/synthetic_data.py` 即时生成，固定种子可复现。
+
+```bash
+cd ~/Graph-RAG
+
+python scripts/bootstrap_graph.py --vms 30 --dry-run
+```
+
+---
+
+## 推荐组合方案
+
+**考核演示场景**：
+
+1. **SMD 跑多维症状分析**（核心展示）：
+   ```bash
+   python scripts/bootstrap_graph.py --source smd --smd-dir dataset/ServerMachineDataset --vms 5 --verify
+   ```
+   展示 38 维指标异常检测 + 维度贡献归因
+
+2. **GAIA 跑根因定位**（核心创新）：
+   ```bash
+   python scripts/bootstrap_graph.py --source gaia --gaia-dir dataset/GAIA-DataSet --verify
+   ```
+   展示 trace 调用链拓扑 + 故障注入记录 → 多跳根因推理
+
+3. **Azure V2 跑 baseline 对比**（可选）：
+   ```bash
+   python scripts/bootstrap_graph.py --source azure --csv dataset/vmtablev2_000000000000.csv --vms 50 --verify
+   ```
+   展示与 SMD/GAIA 的对比效果
+
+## 数据集体积汇总
+
+| 数据集 | 下载体积 | 解压后 | 考核所需 |
 |---|---|---|---|
-| 开发调试 | 1 | 1.2GB | ~1.3万 |
-| 考核验证 | 2-3 | 2.4-3.6GB | ~3-4万 |
-| 全量分析 | 198 | 235GB | 269万 |
+| SMD | ~200MB | ~200MB | 全量（28 台机器） |
+| GAIA | ~2GB | ~5GB | MicroSS/ 子集即可 |
+| Azure V2 | 1.2GB/分片 | 1.2GB/分片 | 1-2 个分片 |
 
-针对考核场景，**下载 1-2 个分片即可**。
+总下载量约 **2-3GB**，Linux 服务器约 5-10 分钟下载完成。
