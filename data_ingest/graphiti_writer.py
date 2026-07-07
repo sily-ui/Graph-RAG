@@ -59,6 +59,7 @@ def build_graphiti_client(config: Any | None = None):
     from graphiti_core.llm_client import OpenAIClient
     from graphiti_core.llm_client.config import LLMConfig
     import openai
+    import os
 
     from data_ingest.local_embedder import build_local_embedder
 
@@ -79,6 +80,13 @@ def build_graphiti_client(config: Any | None = None):
     # 默认模型：BAAI/bge-base-zh-v1.5（409MB，中英双语，768维）
     # 可通过环境变量 EMBEDDING_MODEL / EMBEDDING_DEVICE / EMBEDDING_CACHE_DIR 自定义
     embedder = build_local_embedder()
+
+    # 兜底：把 GEN LLM 的 API Key 注入到环境变量 OPENAI_API_KEY，
+    # 防止 graphiti-core 内部其他模块（如 OpenAIRerankerClient、telemetry 等）
+    # 在没收到 embedder 时回退到默认 OpenAIEmbedder 报错
+    os.environ.setdefault("OPENAI_API_KEY", config.gen_llm.api_key)
+    if config.gen_llm.base_url:
+        os.environ.setdefault("OPENAI_BASE_URL", config.gen_llm.base_url)
 
     # 构建 Graphiti 实例
     graphiti = Graphiti(

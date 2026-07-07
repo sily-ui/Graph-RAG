@@ -113,6 +113,16 @@ class SentenceTransformerEmbedder:
         self.embedding_dim = embedding_dim or int(os.environ.get("EMBEDDING_DIM", "768"))
         self._model: Any = None
 
+    def __bool__(self) -> bool:
+        """让 graphiti-core 的 `if embedder:` 判断永远为 True。
+
+        graphiti-core 0.29.x 的 Graphiti.__init__ 内部用 `if embedder:` 来决定
+        是否使用传入的 embedder 还是 fallback 到 OpenAIEmbedder。
+        如果不显式实现 __bool__，默认走 len() 路径，
+        可能误判为 False 触发 fallback。
+        """
+        return True
+
     def _ensure_model(self) -> Any:
         """懒加载模型。首次调用时从魔搭社区下载。"""
         if self._model is not None:
