@@ -58,8 +58,9 @@ def build_graphiti_client(config: Any | None = None):
     from graphiti_core import Graphiti
     from graphiti_core.llm_client import OpenAIClient
     from graphiti_core.llm_client.config import LLMConfig
-    from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
     import openai
+
+    from data_ingest.local_embedder import build_local_embedder
 
     # 构建 LLM 客户端（用生成 LLM 配置）
     # graphiti-core >=0.29: 抽象 LLMClient 拆分为具体子类，必须用 OpenAIClient
@@ -74,14 +75,10 @@ def build_graphiti_client(config: Any | None = None):
     )
     llm_client = OpenAIClient(config=llm_config, client=openai_client)
 
-    # 显式构造 embedder，复用 GEN LLM 的 Key/URL（兼容 OpenAI/DeepSeek/OpenRouter）
-    # graphiti-core 默认会创建 OpenAIEmbedder 读 OPENAI_API_KEY，必须显式传 config 避免缺 key 报错
-    embedder_config = OpenAIEmbedderConfig(
-        api_key=config.gen_llm.api_key,
-        base_url=config.gen_llm.base_url,
-        embedding_model="text-embedding-3-small",
-    )
-    embedder = OpenAIEmbedder(config=embedder_config)
+    # 使用本地 sentence-transformers embedder（首次运行从魔搭社区自动下载）
+    # 默认模型：BAAI/bge-base-zh-v1.5（409MB，中英双语，768维）
+    # 可通过环境变量 EMBEDDING_MODEL / EMBEDDING_DEVICE / EMBEDDING_CACHE_DIR 自定义
+    embedder = build_local_embedder()
 
     # 构建 Graphiti 实例
     graphiti = Graphiti(

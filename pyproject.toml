@@ -23,4 +23,7 @@ dependencies = [
     # 评估工具
     "scikit-learn>=1.3",
     "tqdm>=4.66",
+    # 本地 Embedding（首次运行从魔搭社区下载模型）
+    "sentence-transformers>=2.6",
+    "modelscope>=1.9",
 ]
