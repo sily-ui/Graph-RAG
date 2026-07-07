@@ -56,11 +56,12 @@ def build_graphiti_client(config: Any | None = None):
         config = get_config()
 
     from graphiti_core import Graphiti
-    from graphiti_core.llm_client import LLMClient
+    from graphiti_core.llm_client import OpenAIClient
     from graphiti_core.llm_client.config import LLMConfig
     import openai
 
     # 构建 LLM 客户端（用生成 LLM 配置）
+    # graphiti-core >=0.29: 抽象 LLMClient 拆分为具体子类，必须用 OpenAIClient
     openai_client = openai.AsyncOpenAI(
         api_key=config.gen_llm.api_key,
         base_url=config.gen_llm.base_url,
@@ -70,7 +71,7 @@ def build_graphiti_client(config: Any | None = None):
         base_url=config.gen_llm.base_url,
         model=config.gen_llm.model,
     )
-    llm_client = LLMClient(client=openai_client, config=llm_config)
+    llm_client = OpenAIClient(config=llm_config, client=openai_client)
 
     # 构建 Graphiti 实例
     graphiti = Graphiti(
