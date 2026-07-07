@@ -18,8 +18,8 @@ Graphiti add_episode 关键参数：
 
 LLM 配置说明：
 Graphiti 内部用 LLM 抽取实体与关系。配置通过 LLMClient：
-    client = LLMClient(client=openai_client, model="deepseek-chat")
-Graphiti 初始化时传入 client_config。
+    client = LLMClient(client=openai_client, model="deepseek-v4-flash")
+Graphiti 初始化时传入 client_config，模型名从 config.gen_llm.model 读取。
 
 注意：Graphiti 的 add_episode 是异步方法，需在 asyncio 事件循环中调用。
 """

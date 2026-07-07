@@ -49,7 +49,7 @@ class LLMClient:
         base_url : str
             API 基址，如 https://api.deepseek.com
         model : str
-            模型名，如 deepseek-chat
+            模型名，如 deepseek-v4-flash
         timeout : int
             请求超时（秒）
         """
