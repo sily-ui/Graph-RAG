@@ -25,3 +25,6 @@ dataset/*
 
 # uv 锁文件（按需保留，建议不入库以避免跨平台冲突）
 # uv.lock
+
+# 评估运行期产物（断点续跑 checkpoint）
+eval/reports/*.jsonl
