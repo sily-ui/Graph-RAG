@@ -24,9 +24,21 @@ logger = logging.getLogger(__name__)
 
 
 def _hop_name_eq(a: str, b: str) -> bool:
-    """节点名等价：与 metrics.py:_hop_name_eq 同实现。"""
+    """节点名等价：严格匹配 + 短串是长串的显著子串。
+
+    严格模式要求短串至少占长串 60% 长度，避免 'a' 被 'extra' 误匹配。
+    与 metrics.py:_hop_name_eq 行为相同但更严格。
+    """
     a, b = a.lower().strip(), b.lower().strip()
-    return a == b or a in b or b in a
+    if a == b:
+        return True
+    if not a or not b:
+        return False
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if shorter not in longer:
+        return False
+    # 短串需占长串 60% 以上长度（避免 'a' in 'extra' 这种伪匹配）
+    return len(shorter) / len(longer) >= 0.6
 
 
 def _extract_expected_nodes(expected_path) -> set[str]:

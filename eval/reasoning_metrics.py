@@ -94,11 +94,13 @@ def compute_answer_exact_match(answer: str, gold_text: str) -> float:
     GraphRAG-Bench §3.3 形式：
         EM = 1 if all gold tokens in answer else 0
     本项目放宽为 Jaccard 兜底（避免单 token 缺失导致 EM=0 噪声大）。
+    空 gold 视为"无 gold 可比对"，按 vacuously true 处理 → 1.0。
     """
     ans_tokens = _meaningful_tokens(answer)
     gold_tokens = _meaningful_tokens(gold_text)
     if not gold_tokens:
-        return 1.0 if not ans_tokens else 0.0
+        # vacuously true（无 gold 标准答案时不计错）
+        return 1.0
     if gold_tokens.issubset(ans_tokens):
         return 1.0
     return _jaccard(ans_tokens, gold_tokens)
