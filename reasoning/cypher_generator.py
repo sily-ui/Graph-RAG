@@ -60,48 +60,45 @@ def _format_datetime(dt: Any) -> str:
     return f"datetime('{dt}')"
 
 
-def _format_list(items: list[str]) -> str:
-    """格式化字符串列表为 Cypher list 字面量。"""
-    if not items:
-        return "[]"
-    return "[" + ", ".join(_escape_string(i) for i in items) + "]"
+def _build_or_keyword_filter(
+    keywords: list[str],
+    param_prefix: str,
+    node_var: str,
+    extra_field: str | None = None,
+) -> tuple[str, dict[str, str]] | None:
+    """构建多个关键词的 OR 过滤条件。
 
+    每个关键词变成独立参数，多个条件用 OR 连接。
+    例如 keywords=['cpu', 'spike'] 会生成：
+        ((s.name CONTAINS $kw_0 OR s.summary CONTAINS $kw_0)
+         OR (s.name CONTAINS $kw_1 OR s.summary CONTAINS $kw_1))
 
-# ============================================================
-#  WHERE 子句构建
-# ============================================================
+    Parameters
+    ----------
+    keywords : list[str]
+        关键词列表
+    param_prefix : str
+        参数名前缀
+    node_var : str
+        节点变量名（用于 name 字段）
+    extra_field : str | None
+        额外的字段（如 s.summary / c.attributes.cause_type），None=只查 name
+    """
+    keywords = [k for k in keywords if k]
+    if not keywords:
+        return None
 
-def _build_entity_filter(
-    intent: QueryIntent,
-    node_var: str = "n",
-) -> str:
-    """构建目标实体过滤 WHERE 子句。"""
-    conditions: list[str] = []
-    if intent.target_entity and intent.target_entity_type:
-        # 根据 entity_type 构建过滤
-        if intent.target_entity_type.lower() in ("vm", "component"):
-            conditions.append(f"{node_var}.name = {_escape_string(intent.target_entity)}")
-        elif intent.target_entity_type.lower() == "cluster":
-            conditions.append(f"{node_var}.attributes.cluster_id = {_escape_string(intent.target_entity)}")
+    params: dict[str, str] = {}
+    conds: list[str] = []
+    for i, kw in enumerate(keywords):
+        p = f"{param_prefix}_{i}"
+        params[p] = kw
+        sub = [f"{node_var}.name CONTAINS ${p}"]
+        if extra_field:
+            sub.append(f"{extra_field} CONTAINS ${p}")
+        conds.append("(" + " OR ".join(sub) + ")")
 
-    if intent.severity_filter:
-        conditions.append(f"{node_var}.attributes.severity = {_escape_string(intent.severity_filter)}")
-
-    return " AND ".join(conditions) if conditions else ""
-
-
-def _build_temporal_filter(
-    time_window: TimeWindow | None,
-    edge_var: str = "r",
-) -> str:
-    """构建时态过滤 WHERE 子句。"""
-    if time_window is None:
-        return ""
-    conditions = [
-        f"{edge_var}.valid_at <= {_format_datetime(time_window.end)}",
-        f"({edge_var}.invalid_at IS NULL OR {edge_var}.invalid_at >= {_format_datetime(time_window.start)})",
-    ]
-    return " AND ".join(conditions)
+    return "(" + " OR ".join(conds) + ")", params
 
 
 # ============================================================
@@ -212,24 +209,20 @@ LIMIT $limit
             "'Cause' IN labels(c)",
         ]
 
-        # 症状关键词过滤
+        # 症状关键词过滤：多个关键词用 OR 连接
         if intent.symptom_keywords:
-            params["symptom_kw"] = intent.symptom_keywords[0]
-            where_clauses.append(
-                f"(s.name CONTAINS $symptom_kw OR s.summary CONTAINS $symptom_kw)"
+            kw = _build_or_keyword_filter(
+                intent.symptom_keywords, "symptom_kw", node_var="s",
+                extra_field="s.summary",
             )
+            if kw:
+                where_clauses.append(kw[0])
+                params.update(kw[1])
 
         # 目标实体过滤
         if intent.target_entity:
             params["entity_name"] = intent.target_entity
             where_clauses.append("s.name = $entity_name")
-
-        # 根因关键词过滤
-        if intent.cause_keywords:
-            params["cause_kw"] = intent.cause_keywords[0]
-            where_clauses.append(
-                f"(c.name CONTAINS $cause_kw OR c.attributes.cause_type = $cause_kw)"
-            )
 
         # 时态过滤
         if intent.time_window:
@@ -336,16 +329,21 @@ LIMIT $limit
         # 目标实体过滤
         if intent.target_entity:
             params["entity_name"] = intent.target_entity
-            if hop_count == 4:
-                # 4 跳起点是 Component
+            if hop_count >= 3:
+                # 3/4 跳起点是 Component
                 where_clauses.append("comp.name = $entity_name")
             else:
                 where_clauses.append("s.name = $entity_name")
 
-        # 症状关键词过滤
+        # 症状关键词过滤：多个关键词用 OR 连接
         if intent.symptom_keywords:
-            params["symptom_kw"] = intent.symptom_keywords[0]
-            where_clauses.append("(s.name CONTAINS $symptom_kw OR s.summary CONTAINS $symptom_kw)")
+            kw = _build_or_keyword_filter(
+                intent.symptom_keywords, "symptom_kw", node_var="s",
+                extra_field="s.summary",
+            )
+            if kw:
+                where_clauses.append(kw[0])
+                params.update(kw[1])
 
         # 时态过滤（多跳路径用首跳的 valid_at）
         if intent.time_window:
@@ -385,32 +383,36 @@ LIMIT $limit
                 "AND r2.name IN ['RESOLVED_BY', 'MITIGATED_BY']"
             )
         elif hop_count == 3:
-            # Symptom → Cause → Cause → Solution
+            # Component → Symptom → Cause → Solution
+            # （微服务排障的 3 跳链：机器展示症状 → 症状有根因 → 根因有解法）
             path_pattern = (
-                "path = (s)-[r1:RELATES_TO]->(c1)-[r2:RELATES_TO]->(c2)-[r3:RELATES_TO]->(sol)"
-            )
-            label_filter = (
-                "'Symptom' IN labels(s) AND 'Cause' IN labels(c1) "
-                "AND 'Cause' IN labels(c2) AND 'Solution' IN labels(sol)"
-            )
-            edge_filter = (
-                "r1.name IN ['CAUSED_BY', 'TRIGGERED_BY'] "
-                "AND r2.name IN ['CAUSED_BY', 'TRIGGERED_BY', 'PROPAGATED_TO'] "
-                "AND r3.name IN ['RESOLVED_BY', 'MITIGATED_BY']"
-            )
-        elif hop_count == 4:
-            # Component → Symptom → Cause → Cause
-            path_pattern = (
-                "path = (comp)-[r1:RELATES_TO]->(s)-[r2:RELATES_TO]->(c1)-[r3:RELATES_TO]->(c2)"
+                "path = (comp)-[r1:RELATES_TO]->(s)-[r2:RELATES_TO]->(c)-[r3:RELATES_TO]->(sol)"
             )
             label_filter = (
                 "'Component' IN labels(comp) AND 'Symptom' IN labels(s) "
-                "AND 'Cause' IN labels(c1) AND 'Cause' IN labels(c2)"
+                "AND 'Cause' IN labels(c) AND 'Solution' IN labels(sol)"
             )
             edge_filter = (
                 "r1.name = 'HAS_SYMPTOM' "
                 "AND r2.name IN ['CAUSED_BY', 'TRIGGERED_BY'] "
-                "AND r3.name IN ['CAUSED_BY', 'TRIGGERED_BY', 'PROPAGATED_TO']"
+                "AND r3.name IN ['RESOLVED_BY', 'MITIGATED_BY']"
+            )
+        elif hop_count == 4:
+            # Component → Symptom → Cause → Cause → Solution
+            # （4 跳：在 3 跳基础上多一个根因中转，用于更深的因果链）
+            path_pattern = (
+                "path = (comp)-[r1:RELATES_TO]->(s)-[r2:RELATES_TO]->(c1)-[r3:RELATES_TO]->(c2)-[r4:RELATES_TO]->(sol)"
+            )
+            label_filter = (
+                "'Component' IN labels(comp) AND 'Symptom' IN labels(s) "
+                "AND 'Cause' IN labels(c1) AND 'Cause' IN labels(c2) "
+                "AND 'Solution' IN labels(sol)"
+            )
+            edge_filter = (
+                "r1.name = 'HAS_SYMPTOM' "
+                "AND r2.name IN ['CAUSED_BY', 'TRIGGERED_BY'] "
+                "AND r3.name IN ['CAUSED_BY', 'TRIGGERED_BY', 'PROPAGATED_TO'] "
+                "AND r4.name IN ['RESOLVED_BY', 'MITIGATED_BY']"
             )
         else:
             raise ValueError(f"不支持的跳数: {hop_count}")
