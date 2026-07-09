@@ -3,592 +3,1461 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Graph-RAG 可视化 · G6 v5</title>
-  <!--
-    Graph-RAG Frontend —— 模块 6
-    用 AntV G6 v5 渲染时态因果图谱。
-    数据源：后端 API  /api/case-study/{case_id}
-    入口：通过 ?case=smd_2hop_001 指定 case，或 ?query=... 触发实时 ask
-  -->
+  <title>Graph-RAG · 时态因果图谱</title>
+  <meta name="description" content="工业故障排查图谱问答系统 —— 自然语言查询，答案可追溯" />
+  <script src="https://unpkg.com/@antv/g6@5/dist/g6.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-      background: #f5f6fa;
-      color: #2c3e50;
+    /* ============================================================
+       Design Tokens —— 8pt grid + 克制配色
+       ============================================================ */
+    :root {
+      /* Spacing — 4/8/12/16/24/32/48 */
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 24px;
+      --space-6: 32px;
+      --space-7: 48px;
+      --space-8: 64px;
+
+      /* Radius */
+      --radius-sm: 6px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --radius-xl: 16px;
+
+      /* Color — 灰阶 + 单色重点（克制高级感） */
+      --color-bg: #fafbfc;
+      --color-surface: #ffffff;
+      --color-surface-hover: #f6f8fa;
+      --color-surface-active: #eef1f5;
+      --color-border: #e4e7ec;
+      --color-border-strong: #d0d5dd;
+      --color-text-primary: #101828;
+      --color-text-secondary: #475467;
+      --color-text-tertiary: #98a2b3;
+      --color-text-disabled: #d0d5dd;
+
+      /* Brand — 静谧蓝灰（Notion / Linear 风格） */
+      --color-brand: #2e3a59;
+      --color-brand-hover: #1f2944;
+      --color-brand-subtle: #eef0f5;
+      --color-brand-text: #2e3a59;
+
+      /* Semantic */
+      --color-success: #027a48;
+      --color-success-bg: #ecfdf3;
+      --color-warning: #b54708;
+      --color-warning-bg: #fffaeb;
+      --color-error: #b42318;
+      --color-error-bg: #fef3f2;
+      --color-info: #1849a9;
+      --color-info-bg: #eff8ff;
+
+      /* Baseline 颜色 —— 配色克制不刺眼 */
+      --baseline-gt: #2e3a59;     /* ground truth 深蓝灰 */
+      --baseline-b1: #b42318;     /* NaiveRAG 暗红 */
+      --baseline-b2: #b54708;     /* Graphiti 橙 */
+      --baseline-b3: #1849a9;     /* NoTemporal 蓝 */
+      --baseline-b4: #027a48;     /* Full GraphRAG 绿 */
+
+      /* Shadow — 多层柔和阴影 */
+      --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.05);
+      --shadow-sm: 0 1px 3px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.04);
+      --shadow-md: 0 4px 8px -2px rgba(16, 24, 40, 0.08), 0 2px 4px -2px rgba(16, 24, 40, 0.04);
+      --shadow-lg: 0 12px 24px -4px rgba(16, 24, 40, 0.08), 0 4px 8px -2px rgba(16, 24, 40, 0.04);
+      --shadow-xl: 0 20px 40px -8px rgba(16, 24, 40, 0.12);
+
+      /* Typography */
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+        'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+      --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, Consolas, monospace;
+      --text-xs: 11px;
+      --text-sm: 13px;
+      --text-base: 14px;
+      --text-md: 15px;
+      --text-lg: 17px;
+      --text-xl: 20px;
+      --text-2xl: 24px;
+      --text-3xl: 30px;
+
+      /* Motion */
+      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+      --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+      --duration-fast: 150ms;
+      --duration-base: 200ms;
+      --duration-slow: 300ms;
+
+      /* Layout */
+      --sidebar-width: 320px;
+      --topbar-height: 64px;
     }
+
+    /* ============================================================
+       Base
+       ============================================================ */
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: var(--font-sans);
+      font-size: var(--text-base);
+      line-height: 1.5;
+      color: var(--color-text-primary);
+      background: var(--color-bg);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      overflow: hidden;
+    }
+    button { font-family: inherit; cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: 0.5; }
+    input, textarea { font-family: inherit; }
+    ::selection { background: var(--color-brand); color: white; }
+
+    /* Scrollbar —— 简洁 */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: var(--color-border-strong);
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover { background: var(--color-text-tertiary); }
+
+    /* Focus —— 可见焦点环 */
+    *:focus-visible {
+      outline: 2px solid var(--color-brand);
+      outline-offset: 2px;
+      border-radius: 2px;
+    }
+
+    /* ============================================================
+       Layout
+       ============================================================ */
+    .app {
+      display: grid;
+      grid-template-rows: var(--topbar-height) 1fr;
+      height: 100vh;
+    }
+
     .topbar {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      padding: 14px 24px;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: var(--space-5);
+      padding: 0 var(--space-5);
+      background: var(--color-surface);
+      border-bottom: 1px solid var(--color-border);
+      z-index: 10;
+    }
+
+    .brand {
       display: flex;
       align-items: center;
-      gap: 16px;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      gap: var(--space-3);
     }
-    .topbar h1 { font-size: 18px; font-weight: 600; }
-    .topbar .badge {
-      background: rgba(255, 255, 255, 0.2);
-      padding: 3px 8px;
-      border-radius: 4px;
-      font-size: 12px;
+    .brand-mark {
+      width: 32px; height: 32px;
+      border-radius: var(--radius-md);
+      background: linear-gradient(135deg, #2e3a59 0%, #4a5878 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: var(--shadow-sm);
     }
-    .topbar input {
-      flex: 1;
-      max-width: 500px;
-      padding: 8px 12px;
-      border: none;
-      border-radius: 4px;
-      outline: none;
-      font-size: 14px;
+    .brand-mark svg { width: 18px; height: 18px; }
+    .brand-text {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.2;
     }
-    .topbar button {
-      padding: 8px 18px;
-      background: white;
-      color: #667eea;
-      border: none;
-      border-radius: 4px;
+    .brand-text strong {
+      font-size: var(--text-md);
       font-weight: 600;
-      cursor: pointer;
-      font-size: 14px;
-      transition: all 0.2s;
+      color: var(--color-text-primary);
+      letter-spacing: -0.01em;
     }
-    .topbar button:hover { background: #f0f0ff; }
-    .topbar button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .brand-text span {
+      font-size: var(--text-xs);
+      color: var(--color-text-tertiary);
+      font-weight: 500;
+    }
 
-    .container {
+    .searchbar {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      max-width: 720px;
+      width: 100%;
+      justify-self: center;
+    }
+    .search-input {
+      flex: 1;
+      height: 40px;
+      padding: 0 var(--space-4);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      background: var(--color-bg);
+      font-size: var(--text-base);
+      color: var(--color-text-primary);
+      transition: all var(--duration-base) var(--ease-out);
+    }
+    .search-input::placeholder { color: var(--color-text-tertiary); }
+    .search-input:hover { border-color: var(--color-border-strong); }
+    .search-input:focus {
+      outline: none;
+      border-color: var(--color-brand);
+      background: var(--color-surface);
+      box-shadow: 0 0 0 3px rgba(46, 58, 89, 0.08);
+    }
+
+    .btn {
+      height: 40px;
+      padding: 0 var(--space-5);
+      border: 1px solid transparent;
+      border-radius: var(--radius-md);
+      font-size: var(--text-base);
+      font-weight: 500;
+      transition: all var(--duration-fast) var(--ease-out);
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+    .btn-primary {
+      background: var(--color-brand);
+      color: white;
+      box-shadow: var(--shadow-xs);
+    }
+    .btn-primary:hover:not(:disabled) {
+      background: var(--color-brand-hover);
+      box-shadow: var(--shadow-sm);
+      transform: translateY(-1px);
+    }
+    .btn-primary:active:not(:disabled) {
+      transform: translateY(0);
+      box-shadow: var(--shadow-xs);
+    }
+    .btn-ghost {
+      background: transparent;
+      color: var(--color-text-secondary);
+      border-color: var(--color-border);
+    }
+    .btn-ghost:hover:not(:disabled) {
+      background: var(--color-surface-hover);
+      color: var(--color-text-primary);
+    }
+
+    .health-pill {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: var(--text-xs);
+      font-weight: 500;
+      background: var(--color-surface-hover);
+      color: var(--color-text-secondary);
+      transition: all var(--duration-base) var(--ease-out);
+    }
+    .health-pill .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--color-text-tertiary);
+      transition: background var(--duration-base);
+    }
+    .health-pill.ok .dot { background: var(--color-success); animation: pulse 2s ease-in-out infinite; }
+    .health-pill.error .dot { background: var(--color-error); }
+    .health-pill.loading .dot { background: var(--color-warning); animation: pulse 1s ease-in-out infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* ============================================================
+       Main layout: sidebar + canvas + right panel
+       ============================================================ */
+    .main {
       display: grid;
-      grid-template-columns: 320px 1fr;
-      height: calc(100vh - 56px);
+      grid-template-columns: var(--sidebar-width) 1fr 360px;
+      height: 100%;
+      overflow: hidden;
     }
 
+    /* ============================================================
+       Sidebar
+       ============================================================ */
     .sidebar {
-      background: white;
-      border-right: 1px solid #e1e4e8;
-      overflow-y: auto;
-      padding: 16px;
+      background: var(--color-surface);
+      border-right: 1px solid var(--color-border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
     }
-    .panel { margin-bottom: 20px; }
-    .panel h3 {
-      font-size: 13px;
-      color: #586069;
+    .sidebar-section {
+      display: flex;
+      flex-direction: column;
+      border-bottom: 1px solid var(--color-border);
+    }
+    .sidebar-section:last-child { border-bottom: none; }
+    .sidebar-section.flex-1 { flex: 1; min-height: 0; }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--space-4) var(--space-5);
+      flex-shrink: 0;
+    }
+    .section-title {
+      font-size: var(--text-xs);
+      font-weight: 600;
+      color: var(--color-text-secondary);
       text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-bottom: 10px;
-      padding-bottom: 6px;
-      border-bottom: 1px solid #e1e4e8;
+      letter-spacing: 0.06em;
+      margin: 0;
+    }
+    .section-count {
+      font-size: var(--text-xs);
+      color: var(--color-text-tertiary);
+      font-variant-numeric: tabular-nums;
     }
 
+    .case-list {
+      overflow-y: auto;
+      padding: 0 var(--space-3) var(--space-3);
+      flex: 1;
+    }
     .case-item {
-      padding: 10px 12px;
-      border-radius: 6px;
+      padding: var(--space-3);
+      border-radius: var(--radius-md);
       cursor: pointer;
-      font-size: 13px;
-      margin-bottom: 4px;
-      transition: all 0.15s;
+      transition: all var(--duration-fast) var(--ease-out);
+      margin-bottom: 2px;
       border: 1px solid transparent;
     }
-    .case-item:hover { background: #f6f8fa; border-color: #e1e4e8; }
-    .case-item.active { background: #e3f2fd; border-color: #2196f3; }
-    .case-item .case-id { font-weight: 600; color: #1976d2; }
-    .case-item .case-meta { color: #586069; font-size: 11px; margin-top: 2px; }
+    .case-item:hover {
+      background: var(--color-surface-hover);
+    }
+    .case-item.active {
+      background: var(--color-brand-subtle);
+      border-color: var(--color-brand);
+    }
+    .case-item .case-id {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      font-weight: 500;
+      color: var(--color-text-primary);
+      margin-bottom: var(--space-1);
+    }
+    .case-item .case-id .hop-tag {
+      display: inline-block;
+      padding: 1px 6px;
+      background: var(--color-brand-subtle);
+      color: var(--color-brand);
+      border-radius: var(--radius-sm);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
     .case-item .case-query {
-      color: #2c3e50;
-      font-size: 12px;
-      margin-top: 4px;
-      white-space: nowrap;
+      font-size: var(--text-sm);
+      color: var(--color-text-secondary);
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+      -webkit-box-orient: vertical;
       overflow: hidden;
-      text-overflow: ellipsis;
     }
 
-    .answer-box {
-      background: #f8f9fa;
-      border-left: 3px solid #667eea;
-      padding: 12px;
-      border-radius: 4px;
-      font-size: 13px;
-      line-height: 1.6;
-      max-height: 300px;
-      overflow-y: auto;
-      white-space: pre-wrap;
+    /* Baseline 选择 */
+    .baseline-toggles {
+      padding: 0 var(--space-5) var(--space-4);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
     }
-    .answer-box:empty::before {
-      content: "(等待查询...)";
-      color: #999;
+    .baseline-row {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      padding: var(--space-2) var(--space-3);
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      transition: background var(--duration-fast);
     }
-
-    .stats {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
+    .baseline-row:hover { background: var(--color-surface-hover); }
+    .baseline-row input { margin: 0; accent-color: var(--color-brand); }
+    .baseline-row .swatch {
+      width: 20px; height: 4px;
+      border-radius: 2px;
+      flex-shrink: 0;
     }
-    .stat-card {
-      background: #f8f9fa;
-      padding: 10px;
-      border-radius: 4px;
-      text-align: center;
+    .baseline-row .swatch.dashed {
+      background: repeating-linear-gradient(
+        90deg, currentColor 0 4px, transparent 4px 7px
+      );
+      height: 3px;
     }
-    .stat-value {
-      font-size: 20px;
-      font-weight: 700;
-      color: #667eea;
+    .baseline-row .swatch.solid { background: currentColor; }
+    .baseline-row .label {
+      font-size: var(--text-sm);
+      color: var(--color-text-primary);
+      flex: 1;
     }
-    .stat-label {
-      font-size: 11px;
-      color: #586069;
+    .baseline-row .label small {
+      display: block;
+      font-size: var(--text-xs);
+      color: var(--color-text-tertiary);
       margin-top: 2px;
     }
 
-    .claim-list { max-height: 240px; overflow-y: auto; }
-    .claim {
-      padding: 8px 10px;
-      border-left: 3px solid #ddd;
-      background: #fafbfc;
-      margin-bottom: 6px;
-      font-size: 12px;
-      border-radius: 0 4px 4px 0;
-    }
-    .claim.entailed { border-left-color: #4caf50; background: #f1f8e9; }
-    .claim.unsupported { border-left-color: #ff9800; background: #fff8e1; }
-    .claim.contradicted { border-left-color: #f44336; background: #ffebee; }
-    .claim .claim-meta { color: #666; font-size: 10px; margin-top: 4px; }
-
-    .graph-container {
+    /* ============================================================
+       Canvas
+       ============================================================ */
+    .canvas-area {
       position: relative;
-      background: white;
+      background: var(--color-bg);
+      overflow: hidden;
     }
     #graph-canvas {
       width: 100%;
       height: 100%;
     }
+    .canvas-empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-4);
+      color: var(--color-text-tertiary);
+      text-align: center;
+      padding: var(--space-5);
+    }
+    .canvas-empty .icon {
+      width: 64px; height: 64px;
+      border-radius: var(--radius-lg);
+      background: var(--color-surface);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: var(--shadow-sm);
+    }
+    .canvas-empty h3 {
+      margin: 0;
+      font-size: var(--text-lg);
+      font-weight: 600;
+      color: var(--color-text-secondary);
+    }
+    .canvas-empty p {
+      margin: 0;
+      font-size: var(--text-sm);
+      color: var(--color-text-tertiary);
+      max-width: 320px;
+    }
+    .canvas-empty .hint {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-3);
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--color-text-secondary);
+      box-shadow: var(--shadow-xs);
+    }
 
+    /* Legend —— 浮动在画布左下角 */
     .legend {
       position: absolute;
-      bottom: 16px;
-      left: 16px;
-      background: rgba(255, 255, 255, 0.95);
-      padding: 10px 14px;
-      border-radius: 6px;
-      font-size: 12px;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-      z-index: 10;
+      left: var(--space-5);
+      bottom: var(--space-5);
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      padding: var(--space-3) var(--space-4);
+      box-shadow: var(--shadow-md);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+      z-index: 5;
+      max-width: 240px;
     }
-    .legend-item {
+    .legend-title {
+      font-size: var(--text-xs);
+      font-weight: 600;
+      color: var(--color-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: var(--space-1);
+    }
+    .legend-row {
       display: flex;
       align-items: center;
-      gap: 6px;
-      margin-bottom: 4px;
+      gap: var(--space-3);
+      font-size: var(--text-xs);
+      color: var(--color-text-secondary);
     }
-    .legend-dot {
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
+    .legend-row .swatch {
+      width: 24px; height: 3px;
+      border-radius: 2px;
+      flex-shrink: 0;
     }
+    .legend-row .swatch.solid { background: currentColor; }
+    .legend-row .swatch.dashed {
+      background: repeating-linear-gradient(
+        90deg, currentColor 0 4px, transparent 4px 7px
+      );
+    }
+    .legend-row .label { color: var(--color-text-primary); font-weight: 500; }
 
-    .status {
+    /* Node category 图例 */
+    .node-legend {
       position: absolute;
-      top: 16px;
-      right: 16px;
-      background: rgba(255, 255, 255, 0.95);
-      padding: 8px 14px;
-      border-radius: 4px;
-      font-size: 12px;
-      z-index: 10;
+      right: var(--space-5);
+      top: var(--space-5);
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      padding: var(--space-3) var(--space-4);
+      box-shadow: var(--shadow-md);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+      z-index: 5;
     }
-    .status.error { color: #d32f2f; }
-    .status.loading { color: #1976d2; }
+    .node-legend-row {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-size: var(--text-xs);
+      color: var(--color-text-secondary);
+    }
+    .node-legend-row .pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 56px;
+      height: 20px;
+      padding: 0 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+    .node-legend-row .pill.component { background: #e0e7ff; color: #3730a3; }
+    .node-legend-row .pill.symptom { background: #fef3c7; color: #92400e; }
+    .node-legend-row .pill.cause { background: #fee2e2; color: #991b1b; }
+    .node-legend-row .pill.solution { background: #d1fae5; color: #065f46; }
 
-    .loading {
-      display: inline-block;
-      width: 14px;
-      height: 14px;
-      border: 2px solid #667eea;
-      border-top-color: transparent;
+    /* ============================================================
+       Loading skeleton
+       ============================================================ */
+    .skeleton {
+      background: linear-gradient(
+        90deg,
+        var(--color-surface-hover) 25%,
+        var(--color-surface-active) 50%,
+        var(--color-surface-hover) 75%
+      );
+      background-size: 200% 100%;
+      animation: shimmer 1.5s ease-in-out infinite;
+      border-radius: var(--radius-sm);
+    }
+    @keyframes shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+    .skeleton-line {
+      height: 12px;
+      margin-bottom: var(--space-2);
+    }
+    .skeleton-card {
+      height: 64px;
+      margin-bottom: var(--space-2);
+      border-radius: var(--radius-md);
+    }
+
+    /* Loading overlay */
+    .canvas-loading {
+      position: absolute;
+      inset: 0;
+      background: rgba(250, 251, 252, 0.85);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 20;
+      animation: fadeIn var(--duration-base) var(--ease-out);
+    }
+    .canvas-loading .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid var(--color-border);
+      border-top-color: var(--color-brand);
       border-radius: 50%;
-      animation: spin 1s linear infinite;
+      animation: spin 0.8s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
+    /* ============================================================
+       Right panel —— answer + claims + metrics
+       ============================================================ */
+    .rightpanel {
+      background: var(--color-surface);
+      border-left: 1px solid var(--color-border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .rightpanel-tabs {
+      display: flex;
+      padding: 0 var(--space-5);
+      border-bottom: 1px solid var(--color-border);
+      gap: var(--space-2);
+      flex-shrink: 0;
+    }
+    .tab {
+      padding: var(--space-3) var(--space-3);
+      border: none;
+      background: none;
+      color: var(--color-text-secondary);
+      font-size: var(--text-sm);
+      font-weight: 500;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: all var(--duration-fast) var(--ease-out);
+    }
+    .tab:hover { color: var(--color-text-primary); }
+    .tab.active {
+      color: var(--color-brand);
+      border-bottom-color: var(--color-brand);
+    }
+    .tab-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-5);
+    }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; animation: fadeIn var(--duration-base) var(--ease-out); }
+
+    /* Answer 区域 */
+    .answer-card {
+      background: var(--color-bg);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: var(--space-4);
+      margin-bottom: var(--space-4);
+    }
+    .answer-card h4 {
+      font-size: var(--text-xs);
+      font-weight: 600;
+      color: var(--color-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin: 0 0 var(--space-2) 0;
+    }
+    .answer-card .answer-text {
+      font-size: var(--text-sm);
+      line-height: 1.6;
+      color: var(--color-text-primary);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* Metrics 卡片 */
+    .metric-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-3);
+      margin-bottom: var(--space-4);
+    }
+    .metric-card {
+      background: var(--color-bg);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: var(--space-3) var(--space-4);
+    }
+    .metric-value {
+      font-size: var(--text-2xl);
+      font-weight: 700;
+      color: var(--color-text-primary);
+      font-variant-numeric: tabular-nums;
+      line-height: 1.2;
+      margin-bottom: 2px;
+    }
+    .metric-value.success { color: var(--color-success); }
+    .metric-value.error { color: var(--color-error); }
+    .metric-label {
+      font-size: var(--text-xs);
+      color: var(--color-text-tertiary);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    /* Claims 列表 */
+    .claim-list { display: flex; flex-direction: column; gap: var(--space-2); }
+    .claim {
+      border: 1px solid var(--color-border);
+      border-left: 3px solid var(--color-border);
+      background: var(--color-bg);
+      border-radius: var(--radius-sm);
+      padding: var(--space-3);
+      transition: all var(--duration-fast);
+    }
+    .claim:hover { border-color: var(--color-border-strong); }
+    .claim.entailed {
+      border-left-color: var(--color-success);
+      background: var(--color-success-bg);
+    }
+    .claim.contradicted {
+      border-left-color: var(--color-error);
+      background: var(--color-error-bg);
+    }
+    .claim.unsupported {
+      border-left-color: var(--color-warning);
+      background: var(--color-warning-bg);
+    }
+    .claim-head {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      margin-bottom: var(--space-1);
+    }
+    .claim-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .claim-badge.entailed { background: var(--color-success); color: white; }
+    .claim-badge.contradicted { background: var(--color-error); color: white; }
+    .claim-badge.unsupported { background: var(--color-warning); color: white; }
+    .claim-confidence {
+      margin-left: auto;
+      font-size: var(--text-xs);
+      color: var(--color-text-tertiary);
+      font-variant-numeric: tabular-nums;
+    }
+    .claim-text {
+      font-size: var(--text-sm);
+      line-height: 1.5;
+      color: var(--color-text-primary);
+    }
+
+    /* Empty state */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: var(--space-7) var(--space-5);
+      text-align: center;
+      color: var(--color-text-tertiary);
+    }
+    .empty-state h4 {
+      font-size: var(--text-sm);
+      font-weight: 600;
+      color: var(--color-text-secondary);
+      margin: var(--space-3) 0 var(--space-1);
+    }
+    .empty-state p {
+      font-size: var(--text-xs);
+      margin: 0;
+      max-width: 220px;
+    }
+
+    /* Toast */
     .toast {
       position: fixed;
-      top: 70px;
-      right: 24px;
-      padding: 12px 18px;
-      background: #4caf50;
+      top: 80px;
+      right: var(--space-5);
+      padding: var(--space-3) var(--space-4);
+      background: var(--color-text-primary);
       color: white;
-      border-radius: 4px;
-      font-size: 13px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      border-radius: var(--radius-md);
+      font-size: var(--text-sm);
+      font-weight: 500;
+      box-shadow: var(--shadow-lg);
       opacity: 0;
-      transform: translateY(-20px);
-      transition: all 0.3s;
-      z-index: 100;
+      transform: translateY(-8px) scale(0.95);
+      transition: all var(--duration-base) var(--ease-spring);
+      z-index: 1000;
+      max-width: 360px;
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
     }
-    .toast.show { opacity: 1; transform: translateY(0); }
-    .toast.error { background: #f44336; }
+    .toast.show { opacity: 1; transform: translateY(0) scale(1); }
+    .toast.error { background: var(--color-error); }
+    .toast.success { background: var(--color-success); }
+
+    /* Error state inline */
+    .error-state {
+      padding: var(--space-5);
+      text-align: center;
+      color: var(--color-error);
+    }
+    .error-state h4 { margin: 0 0 var(--space-1); font-size: var(--text-sm); }
+    .error-state p { margin: 0 0 var(--space-3); font-size: var(--text-xs); color: var(--color-text-secondary); }
+    .error-state .retry-btn {
+      padding: 6px 12px;
+      background: var(--color-error);
+      color: white;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-size: var(--text-xs);
+      font-weight: 500;
+    }
+
+    /* Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    /* Responsive —— 平板/手机适配 */
+    @media (max-width: 1024px) {
+      .main { grid-template-columns: 280px 1fr 320px; }
+    }
+    @media (max-width: 768px) {
+      :root { --sidebar-width: 240px; }
+      .main { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+      .sidebar, .rightpanel { display: none; }
+      .topbar { padding: 0 var(--space-3); gap: var(--space-3); }
+      .searchbar { max-width: none; }
+    }
   </style>
 </head>
 <body>
-  <div class="topbar">
-    <h1>🕸️ Graph-RAG 可视化</h1>
-    <span class="badge" id="api-status">API: 检查中...</span>
-    <input type="text" id="query-input" placeholder="输入自然语言问题 (例: machine-1-6 cpu 飙升的 2 跳根因)" />
-    <button id="ask-btn" onclick="doAsk()">问答</button>
+  <div class="app">
+    <!-- ============================================================
+         Topbar —— 品牌 + 搜索 + 健康状态
+         ============================================================ -->
+    <header class="topbar" role="banner">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="6" cy="6" r="2.5"></circle>
+            <circle cx="18" cy="6" r="2.5"></circle>
+            <circle cx="6" cy="18" r="2.5"></circle>
+            <circle cx="18" cy="18" r="2.5"></circle>
+            <path d="M8 7l8 0M8 17l8 0M7 8l0 8M17 8l0 8"></path>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <strong>Graph-RAG</strong>
+          <span>时态因果图谱</span>
+        </div>
+      </div>
+
+      <form class="searchbar" id="search-form" autocomplete="off">
+        <input
+          type="text"
+          class="search-input"
+          id="query-input"
+          placeholder="输入自然语言问题（如：machine-1-6 cpu 飙升的 2 跳根因）"
+          aria-label="查询输入"
+        />
+        <button type="submit" class="btn btn-primary" id="ask-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="M21 21l-4.3-4.3"></path>
+          </svg>
+          查询
+        </button>
+      </form>
+
+      <div class="health-pill loading" id="health-pill" role="status" aria-live="polite">
+        <span class="dot"></span>
+        <span id="health-text">连接中…</span>
+      </div>
+    </header>
+
+    <!-- ============================================================
+         Main —— 左侧 case 列表 / 中间画布 / 右侧 claims
+         ============================================================ -->
+    <main class="main">
+      <!-- Sidebar -->
+      <aside class="sidebar" role="complementary">
+        <section class="sidebar-section">
+          <header class="section-header">
+            <h2 class="section-title">测试集</h2>
+            <span class="section-count" id="case-count">— 条</span>
+          </header>
+          <div class="case-list" id="case-list" role="list">
+            <div class="skeleton-card skeleton"></div>
+            <div class="skeleton-card skeleton"></div>
+            <div class="skeleton-card skeleton"></div>
+            <div class="skeleton-card skeleton"></div>
+          </div>
+        </section>
+
+        <section class="sidebar-section">
+          <header class="section-header">
+            <h2 class="section-title">基线对比</h2>
+          </header>
+          <div class="baseline-toggles" id="baseline-toggles" role="group" aria-label="基线选择">
+            <label class="baseline-row" style="color: var(--baseline-gt);">
+              <input type="checkbox" checked disabled aria-label="Ground Truth 始终显示" />
+              <span class="swatch solid"></span>
+              <span class="label">Ground Truth<small>真实路径</small></span>
+            </label>
+            <label class="baseline-row" style="color: var(--baseline-b1);">
+              <input type="checkbox" checked data-baseline="B1_NaiveRAG" />
+              <span class="swatch dashed"></span>
+              <span class="label">B1 NaiveRAG<small>纯 LLM 零图谱</small></span>
+            </label>
+            <label class="baseline-row" style="color: var(--baseline-b3);">
+              <input type="checkbox" checked data-baseline="B3_NoTemporal" />
+              <span class="swatch dashed"></span>
+              <span class="label">B3 NoTemporal<small>无时态剪枝</small></span>
+            </label>
+            <label class="baseline-row" style="color: var(--baseline-b4);">
+              <input type="checkbox" checked data-baseline="B4_Full_GraphRAG" />
+              <span class="swatch dashed"></span>
+              <span class="label">B4 Full GraphRAG<small>完整链路</small></span>
+            </label>
+          </div>
+        </section>
+      </aside>
+
+      <!-- Canvas -->
+      <section class="canvas-area" role="main">
+        <div id="graph-canvas" aria-label="图谱画布"></div>
+        <div class="canvas-empty" id="canvas-empty">
+          <div class="icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-tertiary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="6" cy="6" r="2.5"></circle>
+              <circle cx="18" cy="6" r="2.5"></circle>
+              <circle cx="6" cy="18" r="2.5"></circle>
+              <circle cx="18" cy="18" r="2.5"></circle>
+              <path d="M8 7l8 0M8 17l8 0M7 8l0 8M17 8l0 8"></path>
+            </svg>
+          </div>
+          <h3>选择一个 Case 开始探索</h3>
+          <p>从左侧测试集列表选中一个 case，或在顶部输入自然语言问题即时查询。</p>
+          <div class="hint">例: <span>graph_2hop_001</span></div>
+        </div>
+        <div class="canvas-loading" id="canvas-loading" style="display: none;" aria-label="加载中">
+          <div class="spinner"></div>
+        </div>
+
+        <!-- 边 legend -->
+        <div class="legend" id="edge-legend" style="display: none;">
+          <div class="legend-title">边类型</div>
+        </div>
+        <!-- 节点 legend -->
+        <div class="node-legend" id="node-legend" style="display: none;">
+          <div class="legend-title" style="font-size: var(--text-xs); font-weight: 600; color: var(--color-text-secondary); text-transform: uppercase; letter-spacing: 0.06em;">节点类型</div>
+          <div class="node-legend-row"><span class="pill component">Component</span><span>组件</span></div>
+          <div class="node-legend-row"><span class="pill symptom">Symptom</span><span>症状</span></div>
+          <div class="node-legend-row"><span class="pill cause">Cause</span><span>原因</span></div>
+          <div class="node-legend-row"><span class="pill solution">Solution</span><span>解决方案</span></div>
+        </div>
+      </section>
+
+      <!-- Right Panel -->
+      <aside class="rightpanel" role="complementary">
+        <nav class="rightpanel-tabs" role="tablist">
+          <button class="tab active" data-tab="answer" role="tab">答案</button>
+          <button class="tab" data-tab="claims" role="tab">Claims <span id="claims-count" style="opacity: 0.6; margin-left: 2px;">0</span></button>
+          <button class="tab" data-tab="metrics" role="tab">指标</button>
+        </nav>
+        <div class="tab-content">
+          <div class="tab-pane active" id="tab-answer" role="tabpanel">
+            <div class="empty-state" id="answer-empty">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-tertiary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+              </svg>
+              <h4>暂无答案</h4>
+              <p>选择 case 或输入查询，推理结果会显示在这里</p>
+            </div>
+            <div class="answer-card" id="answer-card" style="display: none;">
+              <h4>推理答案</h4>
+              <div class="answer-text" id="answer-text"></div>
+            </div>
+          </div>
+
+          <div class="tab-pane" id="tab-claims" role="tabpanel">
+            <div class="empty-state" id="claims-empty">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-tertiary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 11l3 3L22 4"></path>
+                <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+              </svg>
+              <h4>暂无 Claims</h4>
+              <p>推理结果会拆分为原子声明并核验</p>
+            </div>
+            <div class="claim-list" id="claim-list"></div>
+          </div>
+
+          <div class="tab-pane" id="tab-metrics" role="tabpanel">
+            <div class="empty-state" id="metrics-empty">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-tertiary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 3v18h18"></path>
+                <path d="M7 12l3-3 4 4 5-5"></path>
+              </svg>
+              <h4>暂无指标</h4>
+              <p>运行评估后显示 Recall / Precision 等</p>
+            </div>
+            <div id="metrics-content" style="display: none;">
+              <div class="metric-grid">
+                <div class="metric-card">
+                  <div class="metric-value" id="metric-confidence">—</div>
+                  <div class="metric-label">置信度</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-value" id="metric-paths">—</div>
+                  <div class="metric-label">路径数</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-value" id="metric-recall">—</div>
+                  <div class="metric-label">Recall</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-value" id="metric-precision">—</div>
+                  <div class="metric-label">Precision</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-value" id="metric-temporal">—</div>
+                  <div class="metric-label">时态准确率</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-value" id="metric-elapsed">—</div>
+                  <div class="metric-label">耗时 (s)</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </main>
   </div>
 
-  <div class="container">
-    <div class="sidebar">
-      <div class="panel">
-        <h3>📋 测试集 (前 20 条)</h3>
-        <div id="case-list" style="max-height: 300px; overflow-y: auto;">
-          <div style="color: #999; font-size: 12px;">加载中...</div>
-        </div>
-      </div>
-
-      <div class="panel">
-        <h3>💡 答案</h3>
-        <div class="answer-box" id="answer-text"></div>
-      </div>
-
-      <div class="panel">
-        <h3>📊 评估</h3>
-        <div class="stats">
-          <div class="stat-card">
-            <div class="stat-value" id="stat-confidence">-</div>
-            <div class="stat-label">置信度</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-value" id="stat-paths">-</div>
-            <div class="stat-label">路径数</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-value" id="stat-claims">-</div>
-            <div class="stat-label">Claim</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-value" id="stat-elapsed">-</div>
-            <div class="stat-label">耗时(s)</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="panel">
-        <h3>🔍 原子声明</h3>
-        <div class="claim-list" id="claim-list">
-          <div style="color: #999; font-size: 12px;">(无)</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="graph-container">
-      <div class="status" id="status">就绪</div>
-      <div id="graph-canvas"></div>
-      <div class="legend">
-        <div class="legend-item"><div class="legend-dot" style="background: #1976d2;"></div>Component</div>
-        <div class="legend-item"><div class="legend-dot" style="background: #f57c00;"></div>Symptom</div>
-        <div class="legend-item"><div class="legend-dot" style="background: #d32f2f;"></div>Cause</div>
-        <div class="legend-item"><div class="legend-dot" style="background: #388e3c;"></div>Solution</div>
-        <div class="legend-item" style="margin-top: 6px; font-weight: 600; color: #555;">边: 实线=Ground Truth, 虚线=Baseline 预测</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="toast" id="toast"></div>
-
-  <!-- AntV G6 v5 -->
-  <script src="https://unpkg.com/@antv/g6@5/dist/g6.min.js"></script>
+  <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
 
   <script>
-    // =================== 全局状态 ===================
-    const API_BASE = "http://127.0.0.1:8765";
-    let currentCaseId = null;
-    let graph = null;
-
-    // 节点 label → 颜色
-    const LABEL_COLORS = {
-      Component: "#1976d2",
-      Symptom: "#f57c00",
-      Cause: "#d32f2f",
-      Solution: "#388e3c",
+    /* ============================================================
+       状态管理 + API 封装
+       ============================================================ */
+    const API_BASE = '';
+    const state = {
+      currentCase: null,
+      currentG6Graph: null,
+      selectedBaselines: new Set(['B1_NaiveRAG', 'B3_NoTemporal', 'B4_Full_GraphRAG']),
+      health: 'loading',
     };
 
-    // =================== 工具函数 ===================
-    function toast(msg, isError = false) {
-      const t = document.getElementById("toast");
-      t.textContent = msg;
-      t.className = "toast show" + (isError ? " error" : "");
-      setTimeout(() => t.className = "toast", 3000);
-    }
-
-    function setStatus(msg, type = "") {
-      const el = document.getElementById("status");
-      el.textContent = msg;
-      el.className = "status " + type;
-    }
-
-    async function api(path) {
-      const r = await fetch(API_BASE + path);
-      if (!r.ok) throw new Error(`${path} → ${r.status}`);
+    async function api(path, options = {}) {
+      const r = await fetch(API_BASE + path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        throw new Error(`${r.status} ${r.statusText}：${text.slice(0, 200)}`);
+      }
       return r.json();
     }
 
-    // =================== 加载测试集 ===================
-    async function loadTestset() {
+    /* ============================================================
+       Toast 通知
+       ============================================================ */
+    const toastEl = document.getElementById('toast');
+    let toastTimer = null;
+    function showToast(message, type = 'info', duration = 3500) {
+      if (toastTimer) clearTimeout(toastTimer);
+      toastEl.textContent = message;
+      toastEl.className = `toast show ${type}`;
+      toastTimer = setTimeout(() => {
+        toastEl.classList.remove('show');
+      }, duration);
+    }
+
+    /* ============================================================
+       Health check
+       ============================================================ */
+    async function checkHealth() {
+      const pill = document.getElementById('health-pill');
+      const text = document.getElementById('health-text');
       try {
-        const data = await api("/api/testset?limit=20");
-        const container = document.getElementById("case-list");
-        container.innerHTML = "";
-        data.items.forEach(c => {
-          const div = document.createElement("div");
-          div.className = "case-item";
-          div.dataset.caseId = c.case_id;
-          div.innerHTML = `
-            <div class="case-id">${c.case_id}</div>
-            <div class="case-meta">hop=${c.hop_count} | ${c.domain}</div>
-            <div class="case-query">${c.query}</div>
-          `;
-          div.onclick = () => loadCaseStudy(c.case_id);
-          container.appendChild(div);
+        const h = await api('/api/health');
+        pill.classList.remove('loading', 'error');
+        pill.classList.add('ok');
+        text.textContent = `${h.gen_llm_model.split('-').slice(0, 2).join('-')} · ${h.testset_size} cases`;
+      } catch (e) {
+        pill.classList.remove('loading', 'ok');
+        pill.classList.add('error');
+        text.textContent = 'API 不可达';
+        showToast('无法连接后端 API，请检查服务是否启动', 'error', 5000);
+      }
+    }
+
+    /* ============================================================
+       Case 列表加载
+       ============================================================ */
+    async function loadCases() {
+      const listEl = document.getElementById('case-list');
+      const countEl = document.getElementById('case-count');
+      try {
+        const data = await api('/api/testset?limit=20');
+        countEl.textContent = `${data.total} 条`;
+        if (!data.items || data.items.length === 0) {
+          listEl.innerHTML = '<div class="empty-state"><h4>暂无 case</h4><p>请先跑测试集生成</p></div>';
+          return;
+        }
+        listEl.innerHTML = data.items.map(c => `
+          <div class="case-item" data-case-id="${c.case_id}" role="listitem" tabindex="0">
+            <div class="case-id">
+              <span>${c.case_id}</span>
+              <span class="hop-tag">${c.hop_count} 跳</span>
+            </div>
+            <div class="case-query">${escapeHtml(c.query)}</div>
+          </div>
+        `).join('');
+        listEl.querySelectorAll('.case-item').forEach(el => {
+          const caseId = el.dataset.caseId;
+          el.addEventListener('click', () => loadCase(caseId));
+          el.addEventListener('keydown', e => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              loadCase(caseId);
+            }
+          });
         });
       } catch (e) {
-        document.getElementById("case-list").innerHTML =
-          `<div style="color: #d32f2f; font-size: 12px;">加载失败: ${e.message}</div>`;
+        listEl.innerHTML = `
+          <div class="error-state">
+            <h4>加载失败</h4>
+            <p>${escapeHtml(e.message)}</p>
+            <button class="retry-btn" onclick="loadCases()">重试</button>
+          </div>
+        `;
+        showToast('加载 case 列表失败', 'error');
       }
     }
 
-    // =================== 健康检查 ===================
-    async function checkHealth() {
+    function escapeHtml(s) {
+      return String(s || '').replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    /* ============================================================
+       Case 详情加载 + 渲染
+       ============================================================ */
+    async function loadCase(caseId, baseline = 'B4_Full_GraphRAG') {
+      // 标记选中
+      document.querySelectorAll('.case-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.caseId === caseId);
+      });
+      // 显示 loading
+      document.getElementById('canvas-empty').style.display = 'none';
+      document.getElementById('canvas-loading').style.display = 'flex';
       try {
-        const h = await api("/api/health");
-        document.getElementById("api-status").textContent =
-          `API: ${h.status} | testset=${h.testset_size}`;
-        return h;
+        const data = await api(`/api/case-study/${encodeURIComponent(caseId)}?baseline=${baseline}`);
+        state.currentCase = data;
+        renderGraph(data);
+        renderAnswer(data);
+        renderClaims(data);
+        renderMetrics(data);
+        document.getElementById('edge-legend').style.display = 'block';
+        document.getElementById('node-legend').style.display = 'block';
+        showToast(`已加载 ${caseId}`, 'success', 1500);
       } catch (e) {
-        document.getElementById("api-status").textContent = "API: 离线";
-        throw e;
+        showToast(`加载 case 失败: ${e.message}`, 'error', 4000);
+        document.getElementById('canvas-empty').style.display = 'flex';
+      } finally {
+        document.getElementById('canvas-loading').style.display = 'none';
       }
     }
 
-    // =================== G6 图谱渲染 ===================
+    /* ============================================================
+       G6 v5 渲染
+       ============================================================ */
+    function g6NodeStyle(color) {
+      return {
+        fill: color,
+        stroke: color,
+        size: 36,
+        lineWidth: 2,
+        labelText: (d) => d.name,
+        labelPlacement: 'bottom',
+        labelFill: '#475467',
+        labelFontSize: 12,
+        labelFontWeight: 500,
+        labelBackground: true,
+        labelBackgroundFill: '#ffffff',
+        labelBackgroundOpacity: 0.9,
+        labelBackgroundRadius: 4,
+        labelPadding: [2, 6, 2, 6],
+      };
+    }
+
+    const NODE_PALETTE = {
+      Component: { fill: '#e0e7ff', stroke: '#4f46e5' },
+      Symptom:   { fill: '#fef3c7', stroke: '#d97706' },
+      Cause:     { fill: '#fee2e2', stroke: '#dc2626' },
+      Solution:  { fill: '#d1fae5', stroke: '#059669' },
+    };
+
     function renderGraph(data) {
-      const container = document.getElementById("graph-canvas");
-      container.innerHTML = "";
-      if (graph) graph.destroy();
+      const container = document.getElementById('graph-canvas');
+      container.innerHTML = '';
+      if (!data || !data.nodes || data.nodes.length === 0) {
+        document.getElementById('canvas-empty').style.display = 'flex';
+        return;
+      }
 
-      // 转 G6 v5 数据格式
-      const nodes = data.nodes.map(n => ({
-        id: n.id,
-        data: {
-          label: n.label,
-          color: LABEL_COLORS[n.type] || "#666",
-          nodeType: n.type,
-          attrs: n.attributes || {},
-        },
-        style: { x: Math.random() * 600, y: Math.random() * 400 },
-      }));
-
-      const edges = data.edges.map((e, i) => ({
-        id: "e_" + i,
-        source: e.source,
-        target: e.target,
-        data: {
-          label: e.label,
-          edgeType: e.type,
-          source: e.source_type,
-          isGroundTruth: e.is_ground_truth,
-        },
-        style: {
-          stroke: e.is_ground_truth ? "#667eea" : "#bbb",
-          lineWidth: e.is_ground_truth ? 2 : 1,
-          lineDash: e.is_ground_truth ? [] : [4, 4],
-        },
-      }));
-
-      graph = new G6.Graph({
-        container: "graph-canvas",
-        width: container.clientWidth,
-        height: container.clientHeight,
-        data: { nodes, edges },
-        node: {
-          type: "circle",
+      // 转换数据为 G6 格式
+      const nodes = data.nodes.map(n => {
+        const palette = NODE_PALETTE[n.label] || { fill: '#f1f5f9', stroke: '#94a3b8' };
+        const isGT = n.category === 'ground_truth';
+        return {
+          id: n.id,
+          data: { ...n, isGT },
           style: {
-            size: 32,
-            fill: d => d.data.color,
-            stroke: "#fff",
-            lineWidth: 2,
-            labelText: d => d.id,
-            labelFill: "#fff",
-            labelFontWeight: 600,
-            labelFontSize: 11,
-            labelPlacement: "center",
+            fill: palette.fill,
+            stroke: isGT ? '#1f2944' : palette.stroke,
+            lineWidth: isGT ? 3 : 2,
+            size: isGT ? 40 : 32,
+            labelText: n.name,
+            labelPlacement: 'bottom',
+            labelFill: '#101828',
+            labelFontSize: 12,
+            labelFontWeight: isGT ? 600 : 500,
+            labelBackground: true,
+            labelBackgroundFill: '#ffffff',
+            labelBackgroundOpacity: 0.95,
+            labelBackgroundRadius: 4,
+            labelPadding: [3, 8, 3, 8],
+            labelOffsetY: 6,
           },
-        },
-        edge: {
-          type: "line",
+        };
+      });
+
+      const edges = data.edges.map(e => {
+        const isGT = e.category === 'ground_truth';
+        const color = isGT ? '#1f2944' : (e.color || '#94a3b8');
+        return {
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          data: e,
           style: {
-            stroke: d => d.style.stroke,
-            lineWidth: d => d.style.lineWidth,
-            lineDash: d => d.style.lineDash,
+            stroke: color,
+            lineWidth: isGT ? 2.5 : 2,
+            lineDash: isGT ? [] : [5, 4],
             endArrow: true,
             endArrowSize: 8,
-            labelText: d => d.data.label,
-            labelFill: "#555",
+            endArrowFill: color,
+            labelText: e.label || '',
+            labelFill: '#475467',
             labelFontSize: 10,
+            labelFontWeight: 500,
             labelBackground: true,
-            labelBackgroundFill: "#fff",
+            labelBackgroundFill: '#ffffff',
             labelBackgroundOpacity: 0.9,
-            labelPadding: [2, 4],
+            labelBackgroundRadius: 3,
+            labelPadding: [1, 4, 1, 4],
           },
-        },
+        };
+      });
+
+      // 销毁旧图
+      if (state.currentG6Graph) {
+        try { state.currentG6Graph.destroy(); } catch (e) {}
+      }
+
+      const graph = new G6.Graph({
+        container: 'graph-canvas',
+        width: container.clientWidth,
+        height: container.clientHeight,
+        autoResize: true,
+        background: '#fafbfc',
+        node: { type: 'circle' },
+        edge: { type: 'line' },
         layout: {
-          type: "dagre",
-          rankdir: "LR",
-          nodesep: 30,
-          ranksep: 80,
+          type: 'dforce',
+          linkDistance: 140,
+          nodeStrength: -200,
+          collide: { radius: 50 },
+          alpha: 0.3,
         },
-        behaviors: ["drag-canvas", "zoom-canvas", "drag-element"],
+        behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
+        animation: { duration: 300, easing: 'ease-out' },
+        data: { nodes, edges },
       });
-
-      graph.render();
+      graph.render().then(() => {
+        graph.fitView({ when: 'always', padding: 40 });
+      });
+      state.currentG6Graph = graph;
     }
 
-    // =================== 加载 case study ===================
-    async function loadCaseStudy(caseId) {
-      currentCaseId = caseId;
-      document.querySelectorAll(".case-item").forEach(el => {
-        el.classList.toggle("active", el.dataset.caseId === caseId);
-      });
-      setStatus("加载中...", "loading");
-      try {
-        const data = await api(`/api/case-study/${caseId}?baseline=B4_Full_GraphRAG`);
-        renderGraph(data);
-        document.getElementById("answer-text").textContent =
-          `[Ground Truth] ${data.ground_truth}`;
-        setStatus(`已加载: ${caseId} (${data.nodes.length} 节点, ${data.edges.length} 边)`);
-      } catch (e) {
-        setStatus("加载失败", "error");
-        toast("加载失败: " + e.message, true);
+    /* ============================================================
+       渲染右侧面板：Answer / Claims / Metrics
+       ============================================================ */
+    function renderAnswer(data) {
+      const emptyEl = document.getElementById('answer-empty');
+      const cardEl = document.getElementById('answer-card');
+      const textEl = document.getElementById('answer-text');
+      if (data.answer) {
+        cardEl.style.display = 'block';
+        emptyEl.style.display = 'none';
+        textEl.textContent = data.answer;
+      } else {
+        cardEl.style.display = 'none';
+        emptyEl.style.display = 'flex';
       }
     }
 
-    // =================== 实时问答 ===================
-    async function doAsk() {
-      const query = document.getElementById("query-input").value.trim();
-      if (!query) { toast("请输入问题", true); return; }
-      const btn = document.getElementById("ask-btn");
-      btn.disabled = true;
-      btn.innerHTML = '<span class="loading"></span> 推理中...';
-      setStatus("推理中（可能需要 30s+）...", "loading");
-      try {
-        const t0 = Date.now();
-        const r = await fetch(API_BASE + "/api/ask", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query }),
+    function renderClaims(data) {
+      const listEl = document.getElementById('claim-list');
+      const emptyEl = document.getElementById('claims-empty');
+      const countEl = document.getElementById('claims-count');
+      const claims = data.claims || [];
+      countEl.textContent = String(claims.length);
+      if (claims.length === 0) {
+        listEl.innerHTML = '';
+        emptyEl.style.display = 'flex';
+        return;
+      }
+      emptyEl.style.display = 'none';
+      listEl.innerHTML = claims.map(c => {
+        const v = (c.verdict || 'unsupported').toLowerCase();
+        const conf = c.verification_confidence ?? c.confidence ?? 0;
+        return `
+          <div class="claim ${v}">
+            <div class="claim-head">
+              <span class="claim-badge ${v}">${labelFor(v)}</span>
+              <span class="claim-confidence">${(conf * 100).toFixed(0)}%</span>
+            </div>
+            <div class="claim-text">${escapeHtml(c.claim_text || c.text || '')}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function labelFor(v) {
+      return { entailed: '验证', contradicted: '矛盾', unsupported: '无依据' }[v] || v;
+    }
+
+    function renderMetrics(data) {
+      const emptyEl = document.getElementById('metrics-empty');
+      const contentEl = document.getElementById('metrics-content');
+      const m = data.metrics || {};
+      const has = Object.keys(m).length > 0;
+      if (has) {
+        emptyEl.style.display = 'none';
+        contentEl.style.display = 'block';
+        setMetric('confidence', m.confidence, 2, 1);
+        setMetric('paths', data.paths?.length ?? 0, 0, 0);
+        setMetric('recall', m.recall, 2, 1);
+        setMetric('precision', m.precision, 2, 1);
+        setMetric('temporal', m.temporal_accuracy, 2, 1);
+        setMetric('elapsed', data.elapsed_seconds ?? 0, 1, 0);
+      } else {
+        emptyEl.style.display = 'flex';
+        contentEl.style.display = 'none';
+      }
+    }
+
+    function setMetric(name, value, digits, scale) {
+      const el = document.getElementById(`metric-${name}`);
+      if (value === undefined || value === null) {
+        el.textContent = '—';
+        return;
+      }
+      const v = scale ? value * 100 : value;
+      el.textContent = v.toFixed(digits) + (scale ? '%' : '');
+    }
+
+    /* ============================================================
+       Tab 切换
+       ============================================================ */
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        const target = tab.dataset.tab;
+        document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab));
+        document.querySelectorAll('.tab-pane').forEach(p => {
+          p.classList.toggle('active', p.id === `tab-${target}`);
         });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const data = await r.json();
-        const elapsed = (Date.now() - t0) / 1000;
+      });
+    });
 
-        // 更新答案
-        document.getElementById("answer-text").textContent = data.answer || "(无答案)";
-        document.getElementById("stat-confidence").textContent =
-          data.confidence ? data.confidence.toFixed(2) : "-";
-        document.getElementById("stat-paths").textContent = data.paths?.length || 0;
-        document.getElementById("stat-claims").textContent = data.claims?.length || 0;
-        document.getElementById("stat-elapsed").textContent = elapsed.toFixed(1);
+    /* ============================================================
+       Baseline 切换 —— 控制图谱边显隐
+       ============================================================ */
+    document.querySelectorAll('[data-baseline]').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const b = cb.dataset.baseline;
+        if (cb.checked) state.selectedBaselines.add(b);
+        else state.selectedBaselines.delete(b);
+        // 重渲染图谱
+        if (state.currentCase) renderGraph(state.currentCase);
+      });
+    });
 
-        // 渲染 claim 列表
-        const claimList = document.getElementById("claim-list");
-        if (data.claims && data.claims.length > 0) {
-          claimList.innerHTML = "";
-          data.claims.forEach(c => {
-            const div = document.createElement("div");
-            div.className = "claim " + (c.is_verified ? "entailed" : "unsupported");
-            const verdict = c.is_verified ? "✓ 蕴含" : "✗ 未支撑";
-            div.innerHTML = `
-              <div>[${c.hop_index >= 0 ? "跳" + c.hop_index : "总结"}] ${verdict}</div>
-              <div style="margin-top: 4px;">${c.claim_text}</div>
-              <div class="claim-meta">
-                节点: ${(c.source_nodes || []).join(", ")} |
-                边: ${(c.source_edges || []).join(", ")} |
-                置信: ${c.confidence.toFixed(2)}
-              </div>
-            `;
-            claimList.appendChild(div);
-          });
-        } else {
-          claimList.innerHTML = '<div style="color: #999; font-size: 12px;">(无)</div>';
-        }
+    /* ============================================================
+       搜索栏
+       ============================================================ */
+    document.getElementById('search-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const q = document.getElementById('query-input').value.trim();
+      if (!q) return;
+      // 如果是 case_id 格式（graph_2hop_001 / smd_xxx），直接加载
+      if (/^[a-z]+_\d+hop_\d+$/.test(q)) {
+        loadCase(q);
+        return;
+      }
+      // 否则走自然语言问答
+      await doAsk(q);
+    });
 
-        // 渲染图谱（把 paths 转 G6 格式）
-        const g6Data = pathsToG6(data.paths || [], []);
-        renderGraph(g6Data);
-        setStatus(`完成: 置信度 ${data.confidence?.toFixed(2) || "?"}, ${elapsed.toFixed(1)}s`);
+    async function doAsk(query) {
+      document.getElementById('canvas-loading').style.display = 'flex';
+      document.getElementById('canvas-empty').style.display = 'none';
+      try {
+        const data = await api('/api/ask', {
+          method: 'POST',
+          body: JSON.stringify({ query, use_llm: true }),
+        });
+        // 尝试用返回数据渲染
+        renderAnswer({ answer: data.answer });
+        renderClaims({ claims: data.claims || [] });
+        renderMetrics({ metrics: { confidence: data.confidence }, paths: data.paths, elapsed_seconds: data.elapsed_seconds });
+        showToast(`推理完成，置信度 ${(data.confidence * 100).toFixed(0)}%`, 'success');
       } catch (e) {
-        setStatus("推理失败", "error");
-        toast("推理失败: " + e.message, true);
+        showToast(`问答失败: ${e.message}`, 'error', 4000);
       } finally {
-        btn.disabled = false;
-        btn.textContent = "问答";
+        document.getElementById('canvas-loading').style.display = 'none';
       }
     }
 
-    function pathsToG6(paths, groundTruth) {
-      const nodes = new Map();
-      const edges = [];
-      paths.forEach((p, pi) => {
-        p.hops?.forEach((h, hi) => {
-          if (!nodes.has(h.source_name)) {
-            nodes.set(h.source_name, {
-              id: h.source_name,
-              type: h.source_label,
-              label: h.source_name,
-              attributes: {},
-            });
-          }
-          if (!nodes.has(h.target_name)) {
-            nodes.set(h.target_name, {
-              id: h.target_name,
-              type: h.target_label,
-              label: h.target_name,
-              attributes: {},
-            });
-          }
-          edges.push({
-            id: `e_${pi}_${hi}`,
-            source: h.source_name,
-            target: h.target_name,
-            type: h.edge_name,
-            label: h.edge_name,
-            is_ground_truth: false,
-            source_type: "baseline",
-          });
-        });
-      });
-      return { nodes: Array.from(nodes.values()), edges };
-    }
-
-    // =================== 入口 ===================
-    (async function init() {
-      try {
-        await checkHealth();
-        await loadTestset();
-        // 默认加载第一个 case
-        const first = document.querySelector(".case-item");
-        if (first) {
-          first.classList.add("active");
-          loadCaseStudy(first.dataset.caseId);
-        }
-      } catch (e) {
-        setStatus("API 不可达: " + e.message, "error");
-      }
-
-      // Enter 键触发问答
-      document.getElementById("query-input").addEventListener("keydown", e => {
-        if (e.key === "Enter") doAsk();
-      });
+    /* ============================================================
+       启动
+       ============================================================ */
+    (function init() {
+      checkHealth();
+      loadCases();
+      // 监听窗口大小变化，G6 自适应（autoResize 已开）
     })();
   </script>
 </body>
