@@ -32,6 +32,7 @@ from typing import Any
 from reasoning.result_models import CausalPath, PathHop
 from reasoning.hallucination_verifier import VerifiedClaim, VerdictEnum
 from eval.graph_construction_metrics import compute_graph_construction_metrics
+from eval.reasoning_metrics import compute_reasoning_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,10 @@ class PerHopStats:
     entity_precision: float = 0.0
     relation_recall: float = 0.0
     pipeline_f1: float = 0.0
+    # GraphRAG-Bench 借鉴 (arXiv:2506.02404 §3.3)
+    r_score: float = 0.0
+    ar_score: float = 0.0
+    em: float = 0.0
 
 
 @dataclass
@@ -292,6 +297,20 @@ def evaluate_case(
     )
     # GraphRAG-Bench §3.2 借鉴：图构建质量
     gc_metrics = compute_graph_construction_metrics(exp_path, predicted_hops)
+    # GraphRAG-Bench §3.3 借鉴：推理质量
+    # 答案文本优先从 verified_claims 里取（已带核验），回退到 case 上的属性
+    answer_text = getattr(case, "answer", "") or ""
+    if not answer_text:
+        # 兼容 dict 形式的 case
+        answer_text = (
+            case.get("answer", "") if isinstance(case, dict) else ""
+        )
+    # 若没有 answer，尝试从 BaselineResult 元数据回填（API 路径）
+    if not answer_text and verified_claims:
+        first = verified_claims[0]
+        if isinstance(first, dict):
+            answer_text = first.get("claim_text", "")
+    reason_metrics = compute_reasoning_metrics(answer_text, exp_path, verified_claims)
 
     return {
         "case_id": case.case_id,
@@ -314,6 +333,10 @@ def evaluate_case(
         "entity_precision": gc_metrics["entity_precision"],
         "relation_recall": gc_metrics["relation_recall"],
         "pipeline_f1": gc_metrics["pipeline_f1"],
+        # GraphRAG-Bench §3.3 借鉴
+        "r_score": reason_metrics["r_score"],
+        "ar_score": reason_metrics["ar_score"] if reason_metrics["ar_score"] is not None else 0.0,
+        "em": reason_metrics["em"],
     }
 
 
@@ -354,6 +377,9 @@ def aggregate_metrics(
             entity_precision=_avg(rs, "entity_precision"),
             relation_recall=_avg(rs, "relation_recall"),
             pipeline_f1=_avg(rs, "pipeline_f1"),
+            r_score=_avg(rs, "r_score"),
+            ar_score=_avg(rs, "ar_score"),
+            em=_avg(rs, "em"),
         )
         report.per_hop[h] = stats
 
@@ -374,6 +400,9 @@ def aggregate_metrics(
             entity_precision=_avg(all_rs, "entity_precision"),
             relation_recall=_avg(all_rs, "relation_recall"),
             pipeline_f1=_avg(all_rs, "pipeline_f1"),
+            r_score=_avg(all_rs, "r_score"),
+            ar_score=_avg(all_rs, "ar_score"),
+            em=_avg(all_rs, "em"),
         )
     return report
 
@@ -381,9 +410,9 @@ def aggregate_metrics(
 def report_to_markdown(report: MetricsReport) -> str:
     """把报告渲染成 Markdown 表格（方便论文插图）。"""
     lines = [f"## 评估报告 — {report.baseline_name}", ""]
-    # GraphRAG-Bench §3.2 借鉴：4 个图构建质量列
-    lines.append("| 跳数 | 样本数 | PathError↓ | Hallu(整体)↓ | Hallu(逐跳)↓ | Recall↑ | Precision↑ | TemporalAcc↑ | Provenance↑ | EntityR↑ | EntityP↑ | RelationR↑ | PipeF1↑ |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    # GraphRAG-Bench §3.2-3.3 借鉴：图构建质量 + 推理质量 列
+    lines.append("| 跳数 | N | PathErr↓ | Hallu↓ | Hallu(h)↓ | Recall↑ | Prec↑ | TempAcc↑ | Prov↑ | EntityR↑ | EntityP↑ | RelR↑ | PipeF1↑ | R↑ | AR↑ | EM↑ |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for h in sorted(report.per_hop.keys()):
         s = report.per_hop[h]
         lines.append(
@@ -391,14 +420,16 @@ def report_to_markdown(report: MetricsReport) -> str:
             f"{s.hallucination_rate_overall:.3f} | {s.hallucination_rate_per_hop:.3f} | "
             f"{s.recall:.3f} | {s.precision:.3f} | {s.temporal_accuracy:.3f} | "
             f"{s.provenance_completeness:.3f} | {s.entity_recall:.3f} | "
-            f"{s.entity_precision:.3f} | {s.relation_recall:.3f} | {s.pipeline_f1:.3f} |"
+            f"{s.entity_precision:.3f} | {s.relation_recall:.3f} | {s.pipeline_f1:.3f} | "
+            f"{s.r_score:.3f} | {s.ar_score:.3f} | {s.em:.3f} |"
         )
     o = report.overall
     lines.append(
-        f"| **Overall** | {o.case_count} | **{o.path_error_rate:.3f}** | "
+        f"| **Ov** | {o.case_count} | **{o.path_error_rate:.3f}** | "
         f"**{o.hallucination_rate_overall:.3f}** | **{o.hallucination_rate_per_hop:.3f}** | "
         f"**{o.recall:.3f}** | **{o.precision:.3f}** | **{o.temporal_accuracy:.3f}** | "
         f"**{o.provenance_completeness:.3f}** | **{o.entity_recall:.3f}** | "
-        f"**{o.entity_precision:.3f}** | **{o.relation_recall:.3f}** | **{o.pipeline_f1:.3f}** |"
+        f"**{o.entity_precision:.3f}** | **{o.relation_recall:.3f}** | **{o.pipeline_f1:.3f}** | "
+        f"**{o.r_score:.3f}** | **{o.ar_score:.3f}** | **{o.em:.3f}** |"
     )
     return "\n".join(lines)
