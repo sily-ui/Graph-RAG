@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Any
 
 from reasoning.query_types import QueryIntent, QueryType, StructuredQuery, TimeWindow
-from reasoning.result_models import CausalPath, ReasoningResult
+from reasoning.result_models import CausalPath
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,54 @@ class LLMClient:
         self.model = model
         self.timeout = timeout
         self._client: Any = None
+        self._validate_config()
+
+    def _validate_config(self) -> None:
+        """校验配置：api_key 不能是占位符或含非 ASCII 字符。
+
+        httpx header 不支持非 ASCII，Authorization: Bearer <中文> 会在
+        编码阶段直接失败。占位 key（如 "REPLACE_WITH_*" / "your_api_key"）
+        走到调用时才会 401，但提前拦截能给出更清晰的引导。
+        """
+        if not self.api_key or not self.api_key.strip():
+            raise ValueError(
+                f"LLM api_key 为空（base_url={self.base_url}, model={self.model}）"
+            )
+        try:
+            self.api_key.encode("ascii")
+        except UnicodeEncodeError as e:
+            preview = self.api_key[:10] + "…" if len(self.api_key) > 10 else self.api_key
+            raise ValueError(
+                f"LLM api_key 含非 ASCII 字符（{preview!r}），"
+                f"可能未在 .env 中正确配置。base_url={self.base_url}, model={self.model}"
+            ) from e
+        # 占位符检测：识别明显未替换的占位 key
+        placeholder_patterns = [
+            "REPLACE_WITH_",
+            "your_api_key",
+            "your-token",
+            "<api_key>",
+            "PLACEHOLDER",
+            "请填入",
+        ]
+        upper = self.api_key.upper()
+        for pat in placeholder_patterns:
+            if pat.upper() in upper:
+                raise ValueError(
+                    f"LLM api_key 仍是占位符（{pat!r}），"
+                    f"请到 .env 把 {self._key_env_name()} 换成真实 key。"
+                    f"base_url={self.base_url}, model={self.model}"
+                )
+
+    def _key_env_name(self) -> str:
+        """根据 base_url 推断对应 .env 变量名（用于错误提示）。"""
+        if "stepfun" in self.base_url.lower():
+            return "GEN_LLM_API_KEY / VERIFY_LLM_API_KEY (StepFun)"
+        if "deepseek" in self.base_url.lower():
+            return "GEN_LLM_API_KEY / VERIFY_LLM_API_KEY (DeepSeek)"
+        if "openai.com" in self.base_url.lower():
+            return "OPENAI_API_KEY"
+        return "<api_key>"
 
     def _get_client(self):
         """懒加载 OpenAI 客户端。"""
@@ -81,8 +129,14 @@ class LLMClient:
         temperature: float = 0.1,
         max_tokens: int = 2000,
         response_format: dict | None = None,
+        max_retries: int = 2,
     ) -> str:
         """调用 LLM Chat API。
+
+        失败恢复策略（按优先级）：
+        1. finish_reason='length' 且还有重试次数 → 自动重试 + max_tokens 翻倍
+        2. 网络/超时异常 → 退避重试
+        3. 全部失败 → 抛出 RuntimeError 让上层降级
 
         Parameters
         ----------
@@ -91,22 +145,72 @@ class LLMClient:
         temperature : float
             采样温度（低=确定，高=多样）
         max_tokens : int
-            最大输出 token 数
+            最大输出 token 数（首次调用值，重试时会翻倍）
         response_format : dict | None
             响应格式约束，如 {"type": "json_object"}
+        max_retries : int
+            失败重试次数（默认 2 次，加上首次共 3 次机会）
         """
-        client = self._get_client()
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if response_format is not None:
-            kwargs["response_format"] = response_format
+        import time
+        last_err: Exception | None = None
+        current_max_tokens = max_tokens
 
-        response = client.chat.completions.create(**kwargs)
-        return response.choices[0].message.content or ""
+        for attempt in range(max_retries + 1):
+            try:
+                client = self._get_client()
+                kwargs: dict[str, Any] = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": current_max_tokens,
+                }
+                if response_format is not None:
+                    kwargs["response_format"] = response_format
+
+                response = client.chat.completions.create(**kwargs)
+                content = response.choices[0].message.content
+                finish = getattr(response.choices[0], "finish_reason", "")
+
+                if not content or not content.strip():
+                    # 空内容：可能是 length 截断（最常见）或 content filter
+                    if finish == "length" and attempt < max_retries:
+                        # 翻倍 max_tokens 重试（给模型更多空间）
+                        current_max_tokens = min(current_max_tokens * 2, 8000)
+                        time.sleep(0.5)
+                        last_err = RuntimeError(
+                            f"LLM 返回空内容，finish_reason='length'，"
+                            f"重试 attempt={attempt+1}/{max_retries+1}"
+                        )
+                        continue
+                    # 最后一次或非 length 原因 → 抛错
+                    raise RuntimeError(
+                        f"LLM 返回空内容，finish_reason={finish!r}，model={self.model}"
+                    )
+                if finish == "length" and attempt < max_retries:
+                    # 拿到了内容但 finish_reason=length 仍有截断风险
+                    # 如果内容看起来完整（以句号/右括号/右花括号结尾），就接受
+                    if content.rstrip().endswith((".", "。", "}", "]", "）", ")", '"', "'")):
+                        return content
+                    current_max_tokens = min(current_max_tokens * 2, 8000)
+                    time.sleep(0.5)
+                    continue
+                return content
+
+            except Exception as e:
+                last_err = e
+                # 网络类错误才重试，其他错误（如 API 权限错误）直接抛
+                err_type = type(e).__name__
+                if err_type in ("APITimeoutError", "TimeoutException", "ConnectError",
+                                "ReadTimeout", "ConnectionError", "APIConnectionError"):
+                    if attempt < max_retries:
+                        time.sleep(1.0 * (attempt + 1))  # 1s, 2s, 3s 退避
+                        continue
+                raise
+
+        # 全部重试失败
+        raise RuntimeError(
+            f"LLM 调用失败，已重试 {max_retries} 次: {last_err}"
+        ) from last_err
 
 
 # ============================================================
@@ -173,13 +277,40 @@ class LLMInterpreter:
             结构化查询
         """
         if self.client is None:
-            return self._rule_based_parse(natural_language)
+            result = self._rule_based_parse(natural_language)
+        else:
+            try:
+                result = self._llm_parse(natural_language)
+            except Exception as e:
+                logger.warning(f"LLM 解析查询失败，降级用规则: {e}")
+                result = self._rule_based_parse(natural_language)
 
-        try:
-            return self._llm_parse(natural_language)
-        except Exception as e:
-            logger.warning(f"LLM 解析查询失败，降级用规则: {e}")
-            return self._rule_based_parse(natural_language)
+        return self._post_process_intent(result)
+
+    def _post_process_intent(self, structured: StructuredQuery) -> StructuredQuery:
+        """后处理：当目标实体是 Component（machine-N-N）时，把 causal_chain /
+        solution_lookup / single_entity 升级为 multi_hop_path(3)。
+
+        图库中 3 跳路径是 Component → Symptom → Cause → Solution，但
+        causal_chain 的 Cypher 只匹配 Symptom → Cause，solution_lookup 只匹配
+        Cause → Solution。当用户问 machine-1-2 的根因/解法时，entity 是 Component
+        名而非 Symptom/Cause 名，原 Cypher 返回 0 条路径。
+        """
+        import re
+        intent = structured.intent
+        entity = intent.target_entity
+        if not entity or not re.match(r"machine-\d+-\d+", entity):
+            return structured
+        if intent.query_type in (
+            QueryType.CAUSAL_CHAIN,
+            QueryType.SOLUTION_LOOKUP,
+            QueryType.SINGLE_ENTITY,
+        ):
+            original = intent.query_type.value
+            intent.query_type = QueryType.MULTI_HOP_PATH
+            intent.hop_count = 3
+            structured.metadata["post_processed"] = f"{original} -> multi_hop_path(3)"
+        return structured
 
     def _llm_parse(self, natural_language: str) -> StructuredQuery:
         """用 LLM 解析查询意图。"""
@@ -220,7 +351,7 @@ class LLMInterpreter:
         response = self.client.chat(
             messages,
             temperature=0.0,
-            max_tokens=500,
+            max_tokens=1500,
             response_format={"type": "json_object"},
         )
 
@@ -241,40 +372,63 @@ class LLMInterpreter:
         )
 
     def _rule_based_parse(self, natural_language: str) -> StructuredQuery:
-        """规则兜底的查询解析。"""
+        """规则兜底的查询解析。
+
+        优先级顺序：multi_hop_path > causal_chain > solution_lookup > time_range >
+        single_entity > comparison。注意"和"字在中文里太常见（"根因和解法"是
+        根因+解法而不是对比），不能用 "和" 判定 COMPARISON。
+        """
         text = natural_language.lower()
 
-        # 识别查询类型
-        if any(kw in text for kw in ["对比", "比较", "compare", "vs", "和"]):
-            query_type = QueryType.COMPARISON
-        elif any(kw in text for kw in ["时间段", "期间", "between", "range", "2024", "2023"]):
-            query_type = QueryType.TIME_RANGE
-        elif any(kw in text for kw in ["解法", "解决", "修复", "solution", "fix", "resolve"]):
-            query_type = QueryType.SOLUTION_LOOKUP
+        # 识别查询类型（优先级从高到低）
+        # 注意：箭头记号 "→" / "->" 通常表示路径描述，优先级最高
+        if "→" in text or "->" in text:
+            query_type = QueryType.MULTI_HOP_PATH
+        elif any(kw in text for kw in ["路径", "链路", "链", "完整", "path", "chain"]):
+            query_type = QueryType.MULTI_HOP_PATH
         elif any(kw in text for kw in ["根因", "原因", "为什么", "为何", "为啥", "why", "cause", "root"]):
             query_type = QueryType.CAUSAL_CHAIN
-        elif any(kw in text for kw in ["路径", "链路", "完整", "path", "chain"]):
-            query_type = QueryType.MULTI_HOP_PATH
+        elif any(kw in text for kw in ["解法", "解决", "修复", "solution", "fix", "resolve"]):
+            query_type = QueryType.SOLUTION_LOOKUP
+        elif any(kw in text for kw in ["时间段", "期间", "between", "range", "2024", "2023"]):
+            query_type = QueryType.TIME_RANGE
+        elif any(kw in text for kw in ["对比", "比较", "compare", "vs"]):
+            # 注意：不把 "和" 当成对比关键词，它太常见（"根因和解法"）
+            query_type = QueryType.COMPARISON
         elif any(kw in text for kw in ["vm", "component", "组件", "节点"]):
             query_type = QueryType.SINGLE_ENTITY
         else:
             query_type = QueryType.CAUSAL_CHAIN  # 默认查根因
 
-        # 提取 VM ID（简单正则）
+        # 提取 VM ID（简单正则）；也兼容 machine-N-N 的 SMD 命名
         import re
-        vm_match = re.search(r"vm[_\w]*\d+", text)
+        vm_match = re.search(r"(?:vm[_\w]*\d+|machine-\d+-\d+)", text)
         target_entity = vm_match.group(0) if vm_match else None
         target_entity_type = "vm" if target_entity else None
 
-        # 跳数
+        # 跳数推断
         hop_count = None
         if query_type == QueryType.MULTI_HOP_PATH:
-            if "3跳" in text or "3 跳" in text:
+            # 1) 显式 "N 跳"
+            m = re.search(r"(\d)\s*跳", text)
+            if m:
+                hop_count = int(m.group(1))
+            elif "→" in text or "->" in text:
+                # 2) 箭头数量 = 边数 = 跳数
+                arrow_count = text.count("→") + text.count("->")
+                hop_count = max(arrow_count, 2)
+            elif target_entity and "machine-" in text:
+                # 3) 提到 machine-N-N 的路径查询默认 3 跳
+                #    （图库的 3 跳结构是 Component → Symptom → Cause → Solution）
                 hop_count = 3
-            elif "4跳" in text or "4 跳" in text:
-                hop_count = 4
             else:
                 hop_count = 2
+        elif target_entity and "machine-" in text and query_type in (
+            QueryType.CAUSAL_CHAIN, QueryType.SOLUTION_LOOKUP
+        ):
+            # 提到 machine-N-N 的根因/解法查询，语义上是 3 跳链路
+            query_type = QueryType.MULTI_HOP_PATH
+            hop_count = 3
 
         # 严重程度
         severity = None
