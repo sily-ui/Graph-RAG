@@ -28,3 +28,8 @@ dataset/*
 
 # 评估运行期产物（断点续跑 checkpoint）
 eval/reports/*.jsonl
+
+# 临时备份与 patch 文件
+*.bak_v*
+*.patch
+*.bak
