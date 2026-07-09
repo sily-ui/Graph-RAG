@@ -4,7 +4,7 @@
 
 面向推免考核，构建一个基于时态知识图谱的 Graph-RAG 故障根因推理问答系统，场景选定为服务器集群故障排查。核心研究问题是：**"引入知识图谱结构化路径与时态因果建模后，LLM 在多跳因果推理中的错误率与幻觉率如何量化下降"**。
 
-系统采用 Graphiti 开源版构建时态因果图谱层（记录故障时序），自研 LLM 控制器做查询生成与多跳路径抽取（不外包核心推理），基于 Azure Public Dataset V2 + Google clusterdata-2019 公开数据集与 K8s/Prometheus 运维文档构建因果骨架，交付形态为后端推理系统 + 严谨量化实验报告（2/3/4 跳对照实验）+ G6 因果路径动态可视化。
+系统采用 Graphiti 开源版构建时态因果图谱层（记录故障时序），自研 LLM 控制器做查询生成与多跳路径抽取（不外包核心推理），基于 SMD（Server Machine Dataset，OmniAnomaly 论文，28 台服务器×38 维×5 周多维时序 + 异常标签 + 维度贡献解释）+ MicroSS（CloudWise GAIA 微服务系统，含 metric/trace/business/run 四类、含显式故障注入记录）双源异构数据，与 K8s/Prometheus 运维文档构建因果骨架，交付形态为后端推理系统 + 严谨量化实验报告（2/3/4 跳对照实验）+ G6 因果路径动态可视化。
 
 本方案将用户长处（AntV G6 可视化、工程化能力）最大化转化为研究论证工具，通过逐跳动画、时态查询对比、幻觉定位可视化三个维度让 G6 服务于实验论证而非装饰。
 
@@ -23,11 +23,12 @@
 
 与计算机设计大赛的关键差异：60% 精力放实验设计与量化评估，30% 放核心算法实现，10% 放可视化呈现。
 
-### 已识别的关键技术点（基于 Web 研究）
+### 已识别的关键技术点（基于 Web 研究与本地数据勘察）
 - **Graphiti 开源版**：`pip install graphiti-core`，后端用 Neo4j Community Server（Windows 原生安装，无需 Docker）。核心 API 为 `Graphiti.add_episode()`（时态锚点 `reference_time`）与 `search()`（支持 `bfs_max_depth` 控制跳数）。时态建模通过 `EntityEdge` 的 `valid_at`/`invalid_at`/`expired_at` 实现 bi-temporal 模型。
-- **Azure Public Dataset V2**：2019 年 Azure 某区域 30 天数据，2,695,548 VM，1.9B 条 5 分钟 CPU 读数，235GB，可从 GitHub Releases 直接下载。含 `timestamp_deleted` + CPU 时序，可抽取故障/驱逐事件。
-- **Google clusterdata-2019**：8 个 Borg cell，约 2.4 TiB，需 BigQuery 访问。含 alloc set 父子关系，适合补充因果骨架，作为辅助数据源。
-- **幻觉可追溯评估**：借鉴 MuSiQue/HotpotQA 的 supporting facts 逐跳标注思想，将答案分解为原子陈述，每条标注依赖跳数，逐跳核验 provenance。
+- **SMD（Server Machine Dataset）**：OmniAnomaly 论文（KDD 2019）公开数据集，28 台服务器（3 组：8/10/10） × 38 维指标（CPU/内存/网络/磁盘/系统）× 5 周时序，1 分钟粒度；自带三件套：`train/` 无标签训练集、`test_label/` 异常 0/1 标签（逐分钟）、`interpretation_label/` 每个异常窗口的贡献维度标注。本地 `dataset/ServerMachineDataset/` 已完整解压，`data_ingest/smd_loader.py` 已实现。
+- **MicroSS（GAIA / CloudWise）**：开源微服务故障注入基准，含四类子数据 — `run/` 故障注入与系统日志（核心，注入类型 memory/cpu/network/disk_anomalies，带精确起止时间与持续时长）、`trace/` 调用链 span（可重建服务调用拓扑）、`metric/` 节点级毫秒级时序、`business/` 业务日志。本地 `dataset/MicroSS/` 已完整解压，`data_ingest/gaia_loader.py` 已实现，注入记录通过正则解析为项目统一的 `FaultEvent`。
+- **双源异构的因果骨架合成策略**：SMD 提供单机多维时序异常 + 维度贡献解释（强 ground truth），MicroSS 提供多服务调用链 + 显式故障注入（强因果标注），两者通过 `vm_id`/`service_name` 在 Episode 层面互相关联 — 一条 SMD 异常事件可与一条 MicroSS 故障注入事件共享 `group_id` 形成"单机指标异常 → 服务拓扑上下文"的跨域因果链。
+- **幻觉可追溯评估**：借鉴 MuSiQue/HotpotQA 的 supporting facts 逐跳标注思想，将答案分解为原子陈述，每条标注依赖跳数，逐跳核验 provenance。SMD 的 `interpretation_label` 与 MicroSS 的故障注入记录天然为每条 ground truth 提供"贡献维度/注入类型"级别的 supporting fact，是 2/3/4 跳测试集标注的免费标注源。
 
 ## Proposed Changes
 
@@ -63,22 +64,28 @@
 
 ### 模块 2: 数据接入与图谱构建管线
 
-**文件**: `data_ingest/azure_trace_loader.py`, `data_ingest/google_trace_loader.py`, `data_ingest/fault_event_extractor.py`, `data_ingest/doc_skeleton_seeder.py`, `data_ingest/episode_builder.py`, `data_ingest/graphiti_writer.py`
+**文件**: `data_ingest/smd_loader.py`, `data_ingest/gaia_loader.py`, `data_ingest/fault_event_extractor.py`, `data_ingest/doc_skeleton_seeder.py`, `data_ingest/episode_builder.py`, `data_ingest/graphiti_writer.py`
 
-**What**: 从公开数据集抽取故障事件 + 从运维文档抽取因果骨架，打包成 Graphiti episode 写入时态图谱。
+**What**: 从 SMD 多维时序异常 + MicroSS 故障注入两类公开数据集抽取故障事件，结合运维文档抽取的因果骨架，打包成 Graphiti episode 写入时态图谱。
 
-**Why**: 数据真实性决定图谱可信度。Azure V2 提供真实 CPU 时序与 VM 删除事件，K8s/Prometheus 文档提供因果先验，两者结合既保证领域真实又控制工程量。抽样策略（1 区域 × 7 天 × 故障率 top VM 子集）避免 235GB 全量加载。
+**Why**: 数据真实性决定图谱可信度。SMD 自带异常窗口与维度贡献解释（极强 ground truth），MicroSS 自带故障类型/起止时间/持续时长（极强因果标注），K8s/Prometheus 文档提供因果先验，三者结合既保证领域真实又控制工程量。`smd_loader.py` 与 `gaia_loader.py` 已实现，本模块主要补全 extractor → builder → writer 的串联与 episode 质量校验。
 
 **How**:
-- `azure_trace_loader.py`：流式读取 Azure V2 的 198 个文件，按 5 分钟粒度对每 VM 计算 CPU 时序，滑动窗口 + IQR/3-sigma 检测异常点，抽取 CPU spike（超 p95 阈值持续 N 分钟）与 VM 删除（=故障/驱逐）事件
-- `google_trace_loader.py`：BigQuery 客户端抽样，取 alloc set 父子关系补充因果骨架
+- `smd_loader.py`（已实现）：流式读取 28 台机器的 train/test/interpretation_label 三件套，按 1 分钟粒度解析 38 维时序；通过 `test_label` 的连续 1 段切出异常窗口，从 `interpretation_label` 直接得到贡献维度名（如 `cpu_user_rate`、`memory_used_rate`、`net_in_bytes`），生成 `FaultEvent` 并预填 `metric_name` 与 `linked_cause_type` 候选
+- `gaia_loader.py`（已实现）：解析 `run/` 的故障注入日志（正则抽取 `[memory_anomalies]` 等类型 + `start at` + `lasts N seconds` + IP），与 `trace/` 的 span parent_id 一起重建服务调用拓扑（service→service 边）；将故障注入事件按 IP 匹配到具体 service 节点，生成 `FaultEvent` 并把注入类型映射到 `FaultEventType`（memory→OOM_KILLED, cpu→CPU_SPIKE, network/disk→LATENCY_SURGE）
 - `doc_skeleton_seeder.py`：解析 K8s 官方文档（Pod 生命周期、驱逐策略、OOMKilled）、Prometheus alerting rules、runbook，用 LLM 抽取因果三元组模板作为骨架种子
-- `episode_builder.py`：把故障事件 + 相关 trace 片段 + 文档因果片段打包成 episode，`reference_time` 设为故障发生时刻（时态锚点正确性的关键）
-- `graphiti_writer.py`：调用 `graphiti.add_episode(name, episode_body, source=EpisodeType.json, reference_time=event.ts_start, group_id=cluster_id)` 批量写入
+- `fault_event_extractor.py`：对 `smd_loader` 产出的 `FaultEvent` 做窗口聚合（相邻异常窗口合并、severity 升级），对 `gaia_loader` 产出的 `FaultEvent` 做服务拓扑挂载（依据 trace span 把异常 service 沿调用链上下游回溯生成 `PROPAGATED_TO` 候选边）
+- `episode_builder.py`：把故障事件 + 相关 trace 片段（MicroSS 上下文或 SMD 维度贡献片段）+ 文档因果片段打包成 episode，`reference_time` 设为故障发生时刻（时态锚点正确性的关键）
+- `graphiti_writer.py`：调用 `graphiti.add_episode(name, episode_body, source=EpisodeType.json, reference_time=event.ts_start, group_id=cluster_id)` 批量写入；SMD 与 MicroSS 事件共用 `group_id='cross_domain_<event_id>'` 形成跨域因果链
+
+**双源数据规模控制**：
+- SMD 抽样：28 台机器全量加载无压力（train 708K 行 + test 708K 行，约 60MB），全量使用，按异常窗口密度抽取 ≥ 3 个连续异常点的事件作为有效 `FaultEvent`
+- MicroSS 抽样：从 `run/` 抽取所有故障注入记录（预计 50-200 条/类型），按注入起止时间窗口截取对应 trace 片段（约 1-5MB 上下文/事件）
 
 **可借鉴文献**:
-- AzurePublicDataset V2 (https://github.com/Azure/AzurePublicDataset/blob/master/AzurePublicDatasetV2.md) — 主数据源
-- Google clusterdata-2019 (https://github.com/google/cluster-data/blob/master/ClusterData2019.md) — 辅助数据源
+- OmniAnomaly: A Generic Multi-Variable Anomaly Detection Framework (KDD 2019) — SMD 数据集原始论文
+- GAIA: An Open-source Benchmark for Microservice Anomaly Detection (or CloudWise GAIA 仓库 README) — MicroSS 故障注入语义来源
+- AzurePublicDataset V2 (https://github.com/Azure/AzurePublicDataset/blob/master/AzurePublicDatasetV2.md) — 原方案数据源，本期不采用但保留作为后续可扩展的辅助数据源引用
 
 ---
 
@@ -117,9 +124,9 @@
 
 **How - 测试集构造**:
 - 每跳数 100 条共 300 条，按因果类型（资源争抢/配置/依赖/网络）均衡分布
-- 2 跳：Azure V2 单因故障（CPU spike→noisy neighbor→迁移 VM）
-- 3 跳：K8s 典型链（OOMKilled→memory limit 低→配置错误→改 limit）
-- 4 跳：复合故障（VM→延迟突增→上游依赖→网络分区→重调度）
+- 2 跳：SMD 单机多维异常（`machine-X-Y` 上 `memory_used_rate` 飙升 → `resource_contention` 根因 → `increase_limit` 解法；supporting fact 来自 `interpretation_label` 指明 memory_used_rate 是贡献维度）
+- 3 跳：MicroSS 典型链（某 service 延迟突增 → 上游 service OOMKilled → `misconfiguration`(memory limit 低) → `rollback_deployment` 解法；supporting fact 来自 `run/` 中 `memory_anomalies` 注入记录 + `trace/` 上下游调用链）
+- 4 跳：跨域复合故障（MicroSS `cpu_anomalies` 注入 → service A CPU spike → 调用链传播至 service B → service B `latency_surge` → `dependency_failure` 根因 → `scale_up` 解法；supporting fact 来自注入记录 + trace span 链 + SMD 同窗口异常指标做交叉验证）
 - 每条标注：query、expected_path（实体+边+valid_at）、supporting_facts_per_hop
 
 **How - 四组 Baseline**:
@@ -216,12 +223,12 @@ await graphiti.build_index()  # 首次运行建索引
 
 ### 已确定的三大决策（用户确认）
 1. **Zep 融合度**：Graphiti 开源版做时态因果图谱层 + 自研 LLM 控制器做查询生成与多跳路径抽取。Graphiti 只到 `subgraph_retriever` 为止，`reasoning/` 全部自研。B2（Graphiti-default）作为对照证明自研价值。**不使用 Zep Cloud 托管 API**，避免外包核心推理。
-2. **数据来源**：Azure Public Dataset V2 作主数据（可下载、有 CPU 时序与 VM 删除事件），Google clusterdata-2019 作补充（alloc set 父子关系），K8s/Prometheus 运维文档转因果骨架种子。
+2. **数据来源**：SMD（Server Machine Dataset，OmniAnomaly 论文）作主数据，28 台机器×38 维×5 周多维时序，自带异常窗口 + 维度贡献解释；MicroSS（CloudWise GAIA 微服务系统）作补充，trace span 重建服务拓扑 + run/ 故障注入记录提供强因果标注；K8s/Prometheus 运维文档转因果骨架种子。`smd_loader.py` 与 `gaia_loader.py` 已实现，无需外部下载。
 3. **交付形态**：后端推理系统 + 严谨实验报告 + G6 因果路径动态可视化。不做完整 Web 应用（避免工作量分散稀释实验核心）。
 
 ### 关键假设
 - LLM 选型：生成用 GPT-4o（或同等级闭源 API），核验用 Claude 或本地 NLI 模型（必须与生成解耦）。评估可复现性要求记录 LLM 版本与 prompt。
-- 数据规模：Azure V2 抽样 1 区域 × 7 天 × 故障率 top VM 子集（约 2-5 万 VM），保证故障事件密度足够构造 300 条测试集。不加载全量 235GB。
+- 数据规模：SMD 全量 28 台机器（train+test 共约 141.7 万分钟行，60MB 量级）轻量加载；按 `test_label` 连续异常段（≥ 3 个连续异常点）抽取有效故障事件，预计 200-500 条 `FaultEvent`。MicroSS 按 `run/` 故障注入记录类型（memory/cpu/network/disk）抽样，每类 30-50 条，配套对应窗口的 trace 片段；保证故障事件密度足够构造 300 条 2/3/4 跳测试集。不加载任何 GB 级外部数据。
 - 图数据库：采用 Neo4j Community Server（Windows 原生安装，无需 Docker）。安装步骤为 JDK 17 + 解压 Neo4j zip + `neo4j.bat console` 启动。Neo4j 是 Graphiti 官方推荐后端，生态成熟、Cypher 支持完整、自带 Web 管理界面（localhost:7474）。不用 FalkorDB（避免 Docker 依赖），不用已 deprecated 的 Kuzu。
 - group_id 分区：每个故障场景一个 group_id，检索时传 `group_ids=[case_group]`，既隔离实验又加速查询。
 
@@ -265,8 +272,8 @@ await graphiti.build_index()  # 首次运行建索引
 ### 数据源（无 venue，公开数据集）
 | 数据集 | 来源 | 用途 |
 |---|---|---|
-| AzurePublicDataset V2 | github.com/Azure/AzurePublicDataset | 主数据源，VM CPU 时序与删除事件 |
-| Google clusterdata-2019 | github.com/google/cluster-data | 辅助数据源，alloc set 父子关系补充因果骨架 |
+| SMD (Server Machine Dataset) | OmniAnomaly 论文 (KDD 2019) / github.com/NetManAIOps/OmniAnomaly | 主数据源，28 台服务器×38 维×5 周多维时序，自带异常窗口 + 维度贡献解释 |
+| MicroSS (GAIA) | CloudWise-OpenSource / github.com/CloudWise-OpenSource/GAIA-DataSet | 辅助数据源，trace span 重建服务拓扑 + run/ 故障注入记录提供强因果标注 |
 
 ## Verification Steps
 
