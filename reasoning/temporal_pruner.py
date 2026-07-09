@@ -51,11 +51,13 @@ class PrunerConfig:
     # 是否允许原因与症状同时刻（True=允许，False=必须严格早于）
     ALLOW_SIMULTANEOUS = True
 
-    # 是否启用区间重叠校验
+    # 是否启用区间重叠校验（核心：边的 [valid_at, invalid_at] 与查询窗口重叠）
     ENABLE_INTERVAL_OVERLAP = True
 
     # 是否启用路径单调性校验
-    ENABLE_MONOTONICITY = True
+    # 注意：因果链中 Cause 的 valid_at 可能早于 Symptom（先有因后有果，
+    # 但发现因的时间可能晚于发现果的时间），故默认关闭以避免误剪
+    ENABLE_MONOTONICITY = False
 
     # 是否启用因果终止校验
     ENABLE_TERMINATION = True

@@ -112,6 +112,29 @@ def parse_neo4j_node(node: Any) -> NodeInfo:
     )
 
 
+def _to_python_datetime(value: Any) -> Any:
+    """把 neo4j.time.DateTime / Date / Duration 转成 Python datetime。
+
+    Neo4j Python driver 返回的是 neo4j.time.DateTime，pydantic 校验 datetime 类型不接受。
+    """
+    if value is None:
+        return None
+    # neo4j.time.DateTime / Date 有 to_native() / iso_format() 接口
+    if hasattr(value, "to_native"):
+        try:
+            return value.to_native()
+        except Exception:
+            pass
+    # fallback: 用 iso_format 解析
+    if hasattr(value, "iso_format"):
+        from datetime import datetime
+        try:
+            return datetime.fromisoformat(value.iso_format())
+        except Exception:
+            return value
+    return value
+
+
 def parse_neo4j_relationship(rel: Any) -> dict[str, Any]:
     """从 Neo4j Relationship 对象解析出边属性 dict。
 
@@ -132,9 +155,9 @@ def parse_neo4j_relationship(rel: Any) -> dict[str, Any]:
     else:
         properties = dict(rel)
 
-    # 提取时态字段
-    valid_at = properties.get("valid_at")
-    invalid_at = properties.get("invalid_at")
+    # 提取时态字段（转 Python datetime 以满足 pydantic）
+    valid_at = _to_python_datetime(properties.get("valid_at"))
+    invalid_at = _to_python_datetime(properties.get("invalid_at"))
 
     # attributes
     attributes = properties.get("attributes", {})

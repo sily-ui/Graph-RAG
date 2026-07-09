@@ -56,15 +56,18 @@ def build_graphiti_client(config: Any | None = None):
         config = get_config()
 
     from graphiti_core import Graphiti
-    from graphiti_core.llm_client import OpenAIClient
     from graphiti_core.llm_client.config import LLMConfig
+    from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
     import openai
     import os
 
     from data_ingest.local_embedder import build_local_embedder
 
     # 构建 LLM 客户端（用生成 LLM 配置）
-    # graphiti-core >=0.29: 抽象 LLMClient 拆分为具体子类，必须用 OpenAIClient
+    # 关键：DeepSeek 等只实现 /chat/completions 的 provider ，
+    # 必须用 OpenAIGenericClient（而非 OpenAIClient，后者调 /responses 端点会 404）。
+    # 同时设置 structured_output_mode='json_object' —— DeepSeek 不支持 json_schema 约束解码，
+    # graphiti-core 会在 prompt 中注入 schema 兜底。详见 openai_generic_client.py 注释。
     openai_client = openai.AsyncOpenAI(
         api_key=config.gen_llm.api_key,
         base_url=config.gen_llm.base_url,
@@ -74,12 +77,21 @@ def build_graphiti_client(config: Any | None = None):
         base_url=config.gen_llm.base_url,
         model=config.gen_llm.model,
     )
-    llm_client = OpenAIClient(config=llm_config, client=openai_client)
+    llm_client = OpenAIGenericClient(
+        config=llm_config,
+        client=openai_client,
+        structured_output_mode="json_object",
+    )
 
     # 使用本地 sentence-transformers embedder（首次运行从魔搭社区自动下载）
     # 默认模型：BAAI/bge-base-zh-v1.5（409MB，中英双语，768维）
     # 可通过环境变量 EMBEDDING_MODEL / EMBEDDING_DEVICE / EMBEDDING_CACHE_DIR 自定义
     embedder = build_local_embedder()
+    # 预热：把首次 download+load 提前到 Graphiti 初始化阶段，
+    # 避免首个 add_episode 在 executor 线程里静默下载 409MB 模型导致"假卡死"
+    print("[embedder] 预热本地 sentence-transformers 模型（首次运行约需下载 409MB）...")
+    embedder._ensure_model()  # noqa: SLF001 — 主动触发懒加载
+    print("[embedder] 模型就绪")
 
     # 兜底：把 GEN LLM 的 API Key 注入到环境变量 OPENAI_API_KEY，
     # 防止 graphiti-core 内部其他模块（如 OpenAIRerankerClient、telemetry 等）
@@ -102,8 +114,10 @@ def build_graphiti_client(config: Any | None = None):
 
 async def ensure_indices(graphiti: Any) -> None:
     """确保 Neo4j 索引存在（首次运行需调用）。"""
+    # graphiti-core >=0.22: API 名称从 build_index() 改为 build_indices_and_constraints()
+    # 老方法名已移除（AttributeError: 'Graphiti' object has no attribute 'build_index'）
     try:
-        await graphiti.build_index()
+        await graphiti.build_indices_and_constraints()
         logger.info("Neo4j 索引构建完成")
     except Exception as e:
         # 索引可能已存在，忽略错误
@@ -152,10 +166,17 @@ class GraphitiWriter:
 
     async def write_episode(self, payload: EpisodePayload) -> bool:
         """写入单个 episode。返回是否成功。"""
-        from graphiti_core import EpisodeType
+        from graphiti_core.nodes import EpisodeType
 
         try:
             async with self._semaphore:
+                # graphiti-core 0.29.2 的 bug：把自定义 ENTITY_TYPES/EDGE_TYPES 字段
+                # 打包成 Map 传给 Neo4j 的 SET 子句，Neo4j 拒绝 Map 属性值。
+                # 症状：Property values can only be of primitive types or arrays thereof.
+                #      Encountered: Map{effectiveness -> NO_VALUE, is_immediate -> NO_VALUE}.
+                # 还会把 Pydantic 的 JSON schema 整体当属性值，污染图谱。
+                # 临时绕开：传空 dict，让 LLM 提取的字段落到 Graphiti 的 attributes 字段里。
+                # 自定义 schema 仍通过 pre-validation + post-processing 强制（见 _enforce_custom_schema）
                 await self.graphiti.add_episode(
                     name=payload.name,
                     episode_body=payload.episode_body,
@@ -163,8 +184,9 @@ class GraphitiWriter:
                     reference_time=payload.reference_time,
                     source_description=payload.source_description or payload.name,
                     group_id=payload.group_id,
-                    entity_types=ENTITY_TYPES,
-                    edge_types=EDGE_TYPES,
+                    entity_types={},
+                    edge_types={},
+                    excluded_entity_types=["Entity"],
                 )
             logger.debug(f"episode 写入成功: {payload.name}")
             return True
