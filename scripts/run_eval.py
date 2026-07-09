@@ -184,33 +184,48 @@ def run_eval(
 
 
 def render_summary(reports: dict[str, MetricsReport]) -> str:
-    """渲染 4 baseline × 2/3/4 跳的横向对比表。"""
+    """渲染 4 baseline × 2/3/4 跳的横向对比表（含 GraphRAG-Bench 7 项新指标）。"""
     lines = ["# 评估汇总", ""]
-    lines.append("## Overall 指标对比（4 baseline × 2/3/4 跳）")
+    # 15 列：7 旧指标 + 4 图构建指标 + 3 推理质量 + 1 case 数
+    lines.append(
+        "## Overall 指标对比（4 baseline × 2/3/4 跳，含 GraphRAG-Bench 7 项新指标）"
+    )
     lines.append("")
-    lines.append("| Baseline | PathError↓ | Hallu(整体)↓ | Hallu(逐跳)↓ | Recall↑ | Precision↑ | TemporalAcc↑ | Provenance↑ |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append(
+        "| Baseline | N | PathErr↓ | Hallu↓ | Hallu(h)↓ | Recall↑ | Prec↑ | TempAcc↑ | "
+        "Prov↑ | EntityR↑ | EntityP↑ | RelR↑ | PipeF1↑ | R↑ | AR↑ | EM↑ |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for name, r in reports.items():
         o = r.overall
         lines.append(
-            f"| {name} | {o.path_error_rate:.3f} | {o.hallucination_rate_overall:.3f} | "
-            f"{o.hallucination_rate_per_hop:.3f} | {o.recall:.3f} | {o.precision:.3f} | "
-            f"{o.temporal_accuracy:.3f} | {o.provenance_completeness:.3f} |"
+            f"| {name} | {o.case_count} | {o.path_error_rate:.3f} | "
+            f"{o.hallucination_rate_overall:.3f} | {o.hallucination_rate_per_hop:.3f} | "
+            f"{o.recall:.3f} | {o.precision:.3f} | {o.temporal_accuracy:.3f} | "
+            f"{o.provenance_completeness:.3f} | {o.entity_recall:.3f} | "
+            f"{o.entity_precision:.3f} | {o.relation_recall:.3f} | {o.pipeline_f1:.3f} | "
+            f"{o.r_score:.3f} | {o.ar_score:.3f} | {o.em:.3f} |"
         )
 
     lines.append("\n## 按跳数细分")
     for hop in [2, 3, 4]:
         lines.append(f"\n### {hop} 跳")
-        lines.append("| Baseline | PathError↓ | Hallu(整体)↓ | Hallu(逐跳)↓ | Recall↑ | Precision↑ | TemporalAcc↑ | Provenance↑ |")
-        lines.append("|---|---|---|---|---|---|---|---|")
+        lines.append(
+            "| Baseline | N | PathErr↓ | Hallu↓ | Hallu(h)↓ | Recall↑ | Prec↑ | TempAcc↑ | "
+            "Prov↑ | EntityR↑ | EntityP↑ | RelR↑ | PipeF1↑ | R↑ | AR↑ | EM↑ |"
+        )
+        lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         for name, r in reports.items():
             if hop not in r.per_hop:
                 continue
             s = r.per_hop[hop]
             lines.append(
-                f"| {name} | {s.path_error_rate:.3f} | {s.hallucination_rate_overall:.3f} | "
-                f"{s.hallucination_rate_per_hop:.3f} | {s.recall:.3f} | {s.precision:.3f} | "
-                f"{s.temporal_accuracy:.3f} | {s.provenance_completeness:.3f} |"
+                f"| {name} | {s.case_count} | {s.path_error_rate:.3f} | "
+                f"{s.hallucination_rate_overall:.3f} | {s.hallucination_rate_per_hop:.3f} | "
+                f"{s.recall:.3f} | {s.precision:.3f} | {s.temporal_accuracy:.3f} | "
+                f"{s.provenance_completeness:.3f} | {s.entity_recall:.3f} | "
+                f"{s.entity_precision:.3f} | {s.relation_recall:.3f} | {s.pipeline_f1:.3f} | "
+                f"{s.r_score:.3f} | {s.ar_score:.3f} | {s.em:.3f} |"
             )
     return "\n".join(lines)
 
