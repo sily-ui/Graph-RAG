@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Graph-RAG 可视化 · G6 v5</title>
+  <!--
+    Graph-RAG Frontend —— 模块 6
+    用 AntV G6 v5 渲染时态因果图谱。
+    数据源：后端 API  /api/case-study/{case_id}
+    入口：通过 ?case=smd_2hop_001 指定 case，或 ?query=... 触发实时 ask
+  -->
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: #f5f6fa;
+      color: #2c3e50;
+    }
+    .topbar {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    }
+    .topbar h1 { font-size: 18px; font-weight: 600; }
+    .topbar .badge {
+      background: rgba(255, 255, 255, 0.2);
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .topbar input {
+      flex: 1;
+      max-width: 500px;
+      padding: 8px 12px;
+      border: none;
+      border-radius: 4px;
+      outline: none;
+      font-size: 14px;
+    }
+    .topbar button {
+      padding: 8px 18px;
+      background: white;
+      color: #667eea;
+      border: none;
+      border-radius: 4px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+    .topbar button:hover { background: #f0f0ff; }
+    .topbar button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .container {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      height: calc(100vh - 56px);
+    }
+
+    .sidebar {
+      background: white;
+      border-right: 1px solid #e1e4e8;
+      overflow-y: auto;
+      padding: 16px;
+    }
+    .panel { margin-bottom: 20px; }
+    .panel h3 {
+      font-size: 13px;
+      color: #586069;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 10px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #e1e4e8;
+    }
+
+    .case-item {
+      padding: 10px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      margin-bottom: 4px;
+      transition: all 0.15s;
+      border: 1px solid transparent;
+    }
+    .case-item:hover { background: #f6f8fa; border-color: #e1e4e8; }
+    .case-item.active { background: #e3f2fd; border-color: #2196f3; }
+    .case-item .case-id { font-weight: 600; color: #1976d2; }
+    .case-item .case-meta { color: #586069; font-size: 11px; margin-top: 2px; }
+    .case-item .case-query {
+      color: #2c3e50;
+      font-size: 12px;
+      margin-top: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .answer-box {
+      background: #f8f9fa;
+      border-left: 3px solid #667eea;
+      padding: 12px;
+      border-radius: 4px;
+      font-size: 13px;
+      line-height: 1.6;
+      max-height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    .answer-box:empty::before {
+      content: "(等待查询...)";
+      color: #999;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .stat-card {
+      background: #f8f9fa;
+      padding: 10px;
+      border-radius: 4px;
+      text-align: center;
+    }
+    .stat-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: #667eea;
+    }
+    .stat-label {
+      font-size: 11px;
+      color: #586069;
+      margin-top: 2px;
+    }
+
+    .claim-list { max-height: 240px; overflow-y: auto; }
+    .claim {
+      padding: 8px 10px;
+      border-left: 3px solid #ddd;
+      background: #fafbfc;
+      margin-bottom: 6px;
+      font-size: 12px;
+      border-radius: 0 4px 4px 0;
+    }
+    .claim.entailed { border-left-color: #4caf50; background: #f1f8e9; }
+    .claim.unsupported { border-left-color: #ff9800; background: #fff8e1; }
+    .claim.contradicted { border-left-color: #f44336; background: #ffebee; }
+    .claim .claim-meta { color: #666; font-size: 10px; margin-top: 4px; }
+
+    .graph-container {
+      position: relative;
+      background: white;
+    }
+    #graph-canvas {
+      width: 100%;
+      height: 100%;
+    }
+
+    .legend {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      background: rgba(255, 255, 255, 0.95);
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      z-index: 10;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    .legend-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    .status {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      background: rgba(255, 255, 255, 0.95);
+      padding: 8px 14px;
+      border-radius: 4px;
+      font-size: 12px;
+      z-index: 10;
+    }
+    .status.error { color: #d32f2f; }
+    .status.loading { color: #1976d2; }
+
+    .loading {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid #667eea;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .toast {
+      position: fixed;
+      top: 70px;
+      right: 24px;
+      padding: 12px 18px;
+      background: #4caf50;
+      color: white;
+      border-radius: 4px;
+      font-size: 13px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      opacity: 0;
+      transform: translateY(-20px);
+      transition: all 0.3s;
+      z-index: 100;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.error { background: #f44336; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>🕸️ Graph-RAG 可视化</h1>
+    <span class="badge" id="api-status">API: 检查中...</span>
+    <input type="text" id="query-input" placeholder="输入自然语言问题 (例: machine-1-6 cpu 飙升的 2 跳根因)" />
+    <button id="ask-btn" onclick="doAsk()">问答</button>
+  </div>
+
+  <div class="container">
+    <div class="sidebar">
+      <div class="panel">
+        <h3>📋 测试集 (前 20 条)</h3>
+        <div id="case-list" style="max-height: 300px; overflow-y: auto;">
+          <div style="color: #999; font-size: 12px;">加载中...</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>💡 答案</h3>
+        <div class="answer-box" id="answer-text"></div>
+      </div>
+
+      <div class="panel">
+        <h3>📊 评估</h3>
+        <div class="stats">
+          <div class="stat-card">
+            <div class="stat-value" id="stat-confidence">-</div>
+            <div class="stat-label">置信度</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="stat-paths">-</div>
+            <div class="stat-label">路径数</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="stat-claims">-</div>
+            <div class="stat-label">Claim</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="stat-elapsed">-</div>
+            <div class="stat-label">耗时(s)</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>🔍 原子声明</h3>
+        <div class="claim-list" id="claim-list">
+          <div style="color: #999; font-size: 12px;">(无)</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="graph-container">
+      <div class="status" id="status">就绪</div>
+      <div id="graph-canvas"></div>
+      <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background: #1976d2;"></div>Component</div>
+        <div class="legend-item"><div class="legend-dot" style="background: #f57c00;"></div>Symptom</div>
+        <div class="legend-item"><div class="legend-dot" style="background: #d32f2f;"></div>Cause</div>
+        <div class="legend-item"><div class="legend-dot" style="background: #388e3c;"></div>Solution</div>
+        <div class="legend-item" style="margin-top: 6px; font-weight: 600; color: #555;">边: 实线=Ground Truth, 虚线=Baseline 预测</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <!-- AntV G6 v5 -->
+  <script src="https://unpkg.com/@antv/g6@5/dist/g6.min.js"></script>
+
+  <script>
+    // =================== 全局状态 ===================
+    const API_BASE = "http://127.0.0.1:8765";
+    let currentCaseId = null;
+    let graph = null;
+
+    // 节点 label → 颜色
+    const LABEL_COLORS = {
+      Component: "#1976d2",
+      Symptom: "#f57c00",
+      Cause: "#d32f2f",
+      Solution: "#388e3c",
+    };
+
+    // =================== 工具函数 ===================
+    function toast(msg, isError = false) {
+      const t = document.getElementById("toast");
+      t.textContent = msg;
+      t.className = "toast show" + (isError ? " error" : "");
+      setTimeout(() => t.className = "toast", 3000);
+    }
+
+    function setStatus(msg, type = "") {
+      const el = document.getElementById("status");
+      el.textContent = msg;
+      el.className = "status " + type;
+    }
+
+    async function api(path) {
+      const r = await fetch(API_BASE + path);
+      if (!r.ok) throw new Error(`${path} → ${r.status}`);
+      return r.json();
+    }
+
+    // =================== 加载测试集 ===================
+    async function loadTestset() {
+      try {
+        const data = await api("/api/testset?limit=20");
+        const container = document.getElementById("case-list");
+        container.innerHTML = "";
+        data.items.forEach(c => {
+          const div = document.createElement("div");
+          div.className = "case-item";
+          div.dataset.caseId = c.case_id;
+          div.innerHTML = `
+            <div class="case-id">${c.case_id}</div>
+            <div class="case-meta">hop=${c.hop_count} | ${c.domain}</div>
+            <div class="case-query">${c.query}</div>
+          `;
+          div.onclick = () => loadCaseStudy(c.case_id);
+          container.appendChild(div);
+        });
+      } catch (e) {
+        document.getElementById("case-list").innerHTML =
+          `<div style="color: #d32f2f; font-size: 12px;">加载失败: ${e.message}</div>`;
+      }
+    }
+
+    // =================== 健康检查 ===================
+    async function checkHealth() {
+      try {
+        const h = await api("/api/health");
+        document.getElementById("api-status").textContent =
+          `API: ${h.status} | testset=${h.testset_size}`;
+        return h;
+      } catch (e) {
+        document.getElementById("api-status").textContent = "API: 离线";
+        throw e;
+      }
+    }
+
+    // =================== G6 图谱渲染 ===================
+    function renderGraph(data) {
+      const container = document.getElementById("graph-canvas");
+      container.innerHTML = "";
+      if (graph) graph.destroy();
+
+      // 转 G6 v5 数据格式
+      const nodes = data.nodes.map(n => ({
+        id: n.id,
+        data: {
+          label: n.label,
+          color: LABEL_COLORS[n.type] || "#666",
+          nodeType: n.type,
+          attrs: n.attributes || {},
+        },
+        style: { x: Math.random() * 600, y: Math.random() * 400 },
+      }));
+
+      const edges = data.edges.map((e, i) => ({
+        id: "e_" + i,
+        source: e.source,
+        target: e.target,
+        data: {
+          label: e.label,
+          edgeType: e.type,
+          source: e.source_type,
+          isGroundTruth: e.is_ground_truth,
+        },
+        style: {
+          stroke: e.is_ground_truth ? "#667eea" : "#bbb",
+          lineWidth: e.is_ground_truth ? 2 : 1,
+          lineDash: e.is_ground_truth ? [] : [4, 4],
+        },
+      }));
+
+      graph = new G6.Graph({
+        container: "graph-canvas",
+        width: container.clientWidth,
+        height: container.clientHeight,
+        data: { nodes, edges },
+        node: {
+          type: "circle",
+          style: {
+            size: 32,
+            fill: d => d.data.color,
+            stroke: "#fff",
+            lineWidth: 2,
+            labelText: d => d.id,
+            labelFill: "#fff",
+            labelFontWeight: 600,
+            labelFontSize: 11,
+            labelPlacement: "center",
+          },
+        },
+        edge: {
+          type: "line",
+          style: {
+            stroke: d => d.style.stroke,
+            lineWidth: d => d.style.lineWidth,
+            lineDash: d => d.style.lineDash,
+            endArrow: true,
+            endArrowSize: 8,
+            labelText: d => d.data.label,
+            labelFill: "#555",
+            labelFontSize: 10,
+            labelBackground: true,
+            labelBackgroundFill: "#fff",
+            labelBackgroundOpacity: 0.9,
+            labelPadding: [2, 4],
+          },
+        },
+        layout: {
+          type: "dagre",
+          rankdir: "LR",
+          nodesep: 30,
+          ranksep: 80,
+        },
+        behaviors: ["drag-canvas", "zoom-canvas", "drag-element"],
+      });
+
+      graph.render();
+    }
+
+    // =================== 加载 case study ===================
+    async function loadCaseStudy(caseId) {
+      currentCaseId = caseId;
+      document.querySelectorAll(".case-item").forEach(el => {
+        el.classList.toggle("active", el.dataset.caseId === caseId);
+      });
+      setStatus("加载中...", "loading");
+      try {
+        const data = await api(`/api/case-study/${caseId}?baseline=B4_Full_GraphRAG`);
+        renderGraph(data);
+        document.getElementById("answer-text").textContent =
+          `[Ground Truth] ${data.ground_truth}`;
+        setStatus(`已加载: ${caseId} (${data.nodes.length} 节点, ${data.edges.length} 边)`);
+      } catch (e) {
+        setStatus("加载失败", "error");
+        toast("加载失败: " + e.message, true);
+      }
+    }
+
+    // =================== 实时问答 ===================
+    async function doAsk() {
+      const query = document.getElementById("query-input").value.trim();
+      if (!query) { toast("请输入问题", true); return; }
+      const btn = document.getElementById("ask-btn");
+      btn.disabled = true;
+      btn.innerHTML = '<span class="loading"></span> 推理中...';
+      setStatus("推理中（可能需要 30s+）...", "loading");
+      try {
+        const t0 = Date.now();
+        const r = await fetch(API_BASE + "/api/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query }),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        const elapsed = (Date.now() - t0) / 1000;
+
+        // 更新答案
+        document.getElementById("answer-text").textContent = data.answer || "(无答案)";
+        document.getElementById("stat-confidence").textContent =
+          data.confidence ? data.confidence.toFixed(2) : "-";
+        document.getElementById("stat-paths").textContent = data.paths?.length || 0;
+        document.getElementById("stat-claims").textContent = data.claims?.length || 0;
+        document.getElementById("stat-elapsed").textContent = elapsed.toFixed(1);
+
+        // 渲染 claim 列表
+        const claimList = document.getElementById("claim-list");
+        if (data.claims && data.claims.length > 0) {
+          claimList.innerHTML = "";
+          data.claims.forEach(c => {
+            const div = document.createElement("div");
+            div.className = "claim " + (c.is_verified ? "entailed" : "unsupported");
+            const verdict = c.is_verified ? "✓ 蕴含" : "✗ 未支撑";
+            div.innerHTML = `
+              <div>[${c.hop_index >= 0 ? "跳" + c.hop_index : "总结"}] ${verdict}</div>
+              <div style="margin-top: 4px;">${c.claim_text}</div>
+              <div class="claim-meta">
+                节点: ${(c.source_nodes || []).join(", ")} |
+                边: ${(c.source_edges || []).join(", ")} |
+                置信: ${c.confidence.toFixed(2)}
+              </div>
+            `;
+            claimList.appendChild(div);
+          });
+        } else {
+          claimList.innerHTML = '<div style="color: #999; font-size: 12px;">(无)</div>';
+        }
+
+        // 渲染图谱（把 paths 转 G6 格式）
+        const g6Data = pathsToG6(data.paths || [], []);
+        renderGraph(g6Data);
+        setStatus(`完成: 置信度 ${data.confidence?.toFixed(2) || "?"}, ${elapsed.toFixed(1)}s`);
+      } catch (e) {
+        setStatus("推理失败", "error");
+        toast("推理失败: " + e.message, true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "问答";
+      }
+    }
+
+    function pathsToG6(paths, groundTruth) {
+      const nodes = new Map();
+      const edges = [];
+      paths.forEach((p, pi) => {
+        p.hops?.forEach((h, hi) => {
+          if (!nodes.has(h.source_name)) {
+            nodes.set(h.source_name, {
+              id: h.source_name,
+              type: h.source_label,
+              label: h.source_name,
+              attributes: {},
+            });
+          }
+          if (!nodes.has(h.target_name)) {
+            nodes.set(h.target_name, {
+              id: h.target_name,
+              type: h.target_label,
+              label: h.target_name,
+              attributes: {},
+            });
+          }
+          edges.push({
+            id: `e_${pi}_${hi}`,
+            source: h.source_name,
+            target: h.target_name,
+            type: h.edge_name,
+            label: h.edge_name,
+            is_ground_truth: false,
+            source_type: "baseline",
+          });
+        });
+      });
+      return { nodes: Array.from(nodes.values()), edges };
+    }
+
+    // =================== 入口 ===================
+    (async function init() {
+      try {
+        await checkHealth();
+        await loadTestset();
+        // 默认加载第一个 case
+        const first = document.querySelector(".case-item");
+        if (first) {
+          first.classList.add("active");
+          loadCaseStudy(first.dataset.caseId);
+        }
+      } catch (e) {
+        setStatus("API 不可达: " + e.message, "error");
+      }
+
+      // Enter 键触发问答
+      document.getElementById("query-input").addEventListener("keydown", e => {
+        if (e.key === "Enter") doAsk();
+      });
+    })();
+  </script>
+</body>
+</html>
