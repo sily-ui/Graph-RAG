@@ -1305,6 +1305,18 @@
       Solution:  { fill: '#d1fae5', stroke: '#059669' },
     };
 
+    // 从 CSS token 读颜色 —— 与 swatch 严格一致
+    function getCSSVar(name) {
+      return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+    // 缓存 baseline 颜色映射（启动时读一次）
+    const BASELINE_COLORS = {
+      B1_NaiveRAG:       getCSSVar('--baseline-b1'),
+      B2_GraphitiDefault: getCSSVar('--baseline-b2'),
+      B3_NoTemporal:     getCSSVar('--baseline-b3'),
+      B4_Full_GraphRAG:  getCSSVar('--baseline-b4'),
+    };
+
     function renderGraph(data) {
       const container = document.getElementById('graph-canvas');
       container.innerHTML = '';
@@ -1322,7 +1334,7 @@
           data: { ...n, isGT },
           style: {
             fill: palette.fill,
-            stroke: isGT ? '#1f2944' : palette.stroke,
+            stroke: isGT ? getCSSVar('--baseline-gt') : palette.stroke,
             lineWidth: isGT ? 3 : 2,
             size: isGT ? 40 : 32,
             labelText: n.name,
@@ -1342,7 +1354,10 @@
 
       const edges = data.edges.map(e => {
         const isGT = e.category === 'ground_truth';
-        const color = isGT ? '#1f2944' : (e.color || '#94a3b8');
+        // 颜色统一从 CSS token 读取，与左侧 swatch 一致
+        const color = isGT
+          ? getCSSVar('--baseline-gt')
+          : (BASELINE_COLORS[e.baseline] || getCSSVar('--baseline-b3'));
         return {
           id: e.id,
           source: e.source,
