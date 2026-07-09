@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -51,13 +51,32 @@ def _build_llm_config(prefix: str) -> LLMConfig:
 
 
 def get_config() -> AppConfig:
+    """从 .env 加载配置。
+
+    VERIFY_LLM_* 任何字段缺失时，回退到 GEN_LLM_* 对应字段。
+    这样 .env 只需配 GEN_LLM_*，核验 LLM 自动复用同一个 client。
+    """
+    gen = _build_llm_config("GEN_LLM")
+    ver = _build_llm_config("VERIFY_LLM")
+
+    # verify 配置回退：空字符串 → 用 gen 的
+    ver_api_key = ver.api_key or gen.api_key
+    ver_base_url = ver.base_url or gen.base_url
+    ver_model = ver.model or gen.model
+    ver_provider = ver.provider or gen.provider
+
     return AppConfig(
         neo4j=Neo4jConfig(
             uri=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
             user=os.environ.get("NEO4J_USER", "neo4j"),
             password=os.environ.get("NEO4J_PASSWORD", ""),
         ),
-        gen_llm=_build_llm_config("GEN_LLM"),
-        verify_llm=_build_llm_config("VERIFY_LLM"),
+        gen_llm=gen,
+        verify_llm=LLMConfig(
+            provider=ver_provider,
+            api_key=ver_api_key,
+            base_url=ver_base_url,
+            model=ver_model,
+        ),
         group_id_prefix=os.environ.get("GROUP_ID_PREFIX", "cluster"),
     )

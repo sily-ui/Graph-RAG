@@ -34,8 +34,19 @@
 3. LLM + 图谱协同：LLM 负责意图解析与结果解释，图谱负责精确检索，
    避免纯 LLM 的幻觉问题
 """
+from reasoning.claim_decomposer import (
+    AtomicClaim,
+    ClaimDecomposition,
+    ClaimDecomposer,
+)
 from reasoning.controller import ReasoningController
 from reasoning.cypher_generator import CypherGenerator
+from reasoning.hallucination_verifier import (
+    HallucinationReport,
+    HallucinationVerifier,
+    VerifiedClaim,
+    VerdictEnum,
+)
 from reasoning.llm_interpreter import LLMInterpreter
 from reasoning.path_extractor import PathExtractor
 from reasoning.query_types import (
@@ -66,4 +77,11 @@ __all__ = [
     "NodeInfo",
     "PathHop",
     "ReasoningResult",
+    "ClaimDecomposer",
+    "AtomicClaim",
+    "ClaimDecomposition",
+    "HallucinationVerifier",
+    "HallucinationReport",
+    "VerifiedClaim",
+    "VerdictEnum",
 ]
