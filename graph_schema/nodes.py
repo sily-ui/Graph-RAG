@@ -23,7 +23,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ============================================================
@@ -108,10 +108,12 @@ class ComponentEntity(BaseModel):
     主数据来源：Azure Public Dataset V2 的 VM 表 + K8s 资源对象。
     """
     component_type: ComponentType = Field(
-        description="组件类型，如 vm/pod/container/node/service"
+        default=ComponentType.VM,
+        description="组件类型，如 vm/pod/container/node/service",
     )
     cluster_id: str = Field(
-        description="所属集群标识，用于隔离不同故障场景的查询范围"
+        default="unknown",
+        description="所属集群标识。LLM 漏填时为 'unknown'，事后可用 Cypher 补字段",
     )
     sku: str | None = Field(
         default=None,
@@ -126,6 +128,13 @@ class ComponentEntity(BaseModel):
         description="内存 GB 桶，如 '64-128'，来自 Azure V2 的 vm表"
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_none_for_defaults(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if v is not None}
+        return data
+
 
 class SymptomEntity(BaseModel):
     """症状层节点类型定义。
@@ -134,7 +143,8 @@ class SymptomEntity(BaseModel):
     症状是故障排查的入口：用户提问通常从症状出发，沿因果链追溯根因。
     """
     symptom_type: SymptomType = Field(
-        description="症状类型：metric_anomaly/event/log_pattern"
+        default=SymptomType.METRIC_ANOMALY,
+        description="症状类型：metric_anomaly/event/log_pattern",
     )
     severity: Severity = Field(
         default=Severity.WARNING,
@@ -157,6 +167,13 @@ class SymptomEntity(BaseModel):
         description="症状首次出现的时刻（ISO8601 字符串），作为 valid_at 锚点"
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_none_for_defaults(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if v is not None}
+        return data
+
 
 class CauseEntity(BaseModel):
     """因果层节点类型定义。
@@ -166,7 +183,8 @@ class CauseEntity(BaseModel):
     is_root=true 标记链尾的根因节点。
     """
     cause_type: CauseType = Field(
-        description="因果类型，如 resource_contention/misconfiguration"
+        default=CauseType.RESOURCE_CONTENTION,
+        description="因果类型，如 resource_contention/misconfiguration",
     )
     confidence: float = Field(
         default=0.8,
@@ -179,6 +197,13 @@ class CauseEntity(BaseModel):
         description="是否为根因（因果链末端）。true=根因，false=中间原因"
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_none_for_defaults(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if v is not None}
+        return data
+
 
 class SolutionEntity(BaseModel):
     """解法层节点类型定义。
@@ -187,7 +212,8 @@ class SolutionEntity(BaseModel):
     解法节点的 runbook_ref 关联到运维文档片段，支撑 provenance 溯源。
     """
     solution_type: SolutionType = Field(
-        description="解法类型，如 restart_pod/scale_up/drain_node"
+        default=SolutionType.RESTART_POD,
+        description="解法类型，如 restart_pod/scale_up/drain_node",
     )
     runbook_ref: str | None = Field(
         default=None,
@@ -197,6 +223,13 @@ class SolutionEntity(BaseModel):
         default=None,
         description="预估修复时间（分钟），用于解法优先级排序"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_none_for_defaults(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if v is not None}
+        return data
 
 
 # ============================================================
