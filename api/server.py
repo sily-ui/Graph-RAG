@@ -152,6 +152,8 @@ class AppState:
     neo4j_driver: Any = None
     testset_cache: list[dict] = []
     testset_path: str = "eval/testset.jsonl"
+    report_cache: dict[str, dict[str, dict]] = {}  # baseline_name -> case_id -> row
+    reports_dir: str = "eval/reports_full"
 
 
 def _to_path_info(p, idx: int = 0) -> PathInfo:
@@ -231,6 +233,30 @@ async def lifespan(app: FastAPI):
         )
         state.testset_cache = [json.loads(json.dumps(t.__dict__, default=str))
                               for t in testset]
+
+    # 加载 report cache（4 个 baseline 的预测 + 指标，用于 case-study 实时可视化）
+    reports_dir = PROJECT_ROOT / state.reports_dir
+    if reports_dir.exists():
+        for jsonl in reports_dir.glob("*.jsonl"):
+            baseline_name = jsonl.stem  # e.g. "B4_Full_GraphRAG"
+            state.report_cache[baseline_name] = {}
+            try:
+                with open(jsonl) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            row = json.loads(line)
+                            state.report_cache[baseline_name][row["case_id"]] = row
+                        except (json.JSONDecodeError, KeyError):
+                            continue
+            except Exception as e:
+                logger.warning(f"加载 {jsonl.name} 失败: {e}")
+        logger.info(
+            f"已加载 report cache: {len(state.report_cache)} baselines, "
+            f"{sum(len(v) for v in state.report_cache.values())} rows"
+        )
 
     # 构造 LLM 客户端
     try:
@@ -425,7 +451,7 @@ async def get_case(case_id: str):
 
 @app.get("/api/case-study/{case_id}")
 async def case_study(case_id: str, baseline: str = Query("B4_Full_GraphRAG")):
-    """导出 G6 可视化数据：单 case 的 ground truth + 选定 baseline 预测。
+    """导出 G6 可视化数据：单 case 的 ground truth + 全部 4 个 baseline 预测。
 
     返回格式与 scripts/export_case_study.py 一致，便于前端 G6 直接消费。
     """
@@ -433,21 +459,9 @@ async def case_study(case_id: str, baseline: str = Query("B4_Full_GraphRAG")):
     case_dict = next((c for c in s.testset_cache if c.get("case_id") == case_id), None)
     if case_dict is None:
         raise HTTPException(404, f"Case 不存在: {case_id}")
-    # 调 export_case_study 的 helper
-    try:
-        from scripts.export_case_study import to_g6_data
-    except ImportError:
-        # 兼容：脚本作为子模块
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "export_case_study", PROJECT_ROOT / "scripts" / "export_case_study.py"
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore
-        to_g6_data = mod.to_g6_data
 
-    # 构造 TestCase
-    from eval.testset_builder import ExpectedHop, SupportingFact
+    # 构造 TestCase（用于 to_g6_data）
+    from eval.testset_builder import ExpectedHop, SupportingFact, TestCase
     case = TestCase(
         case_id=case_dict["case_id"],
         domain=case_dict["domain"],
@@ -460,35 +474,94 @@ async def case_study(case_id: str, baseline: str = Query("B4_Full_GraphRAG")):
         metadata=case_dict.get("metadata", {}),
     )
 
-    # 跑指定 baseline
+    # 从 report cache 读全部 4 个 baseline 的预测数据 + 指标
     baseline_results: dict[str, Any] = {}
-    try:
-        if baseline == "B4_Full_GraphRAG" and s.controller is not None:
+    baseline_metrics: dict[str, dict] = {}
+
+    if hasattr(s, "report_cache") and s.report_cache:
+        # 节点名 → 标签 的映射（用 expected_path 反查 label）
+        name_to_label = {}
+        for h in case_dict["expected_path"]:
+            for k in ("source", "target"):
+                name_to_label[h[f"{k}_name"]] = h[f"{k}_label"]
+
+        for bname, rec in s.report_cache.items():
+            row = rec.get(case_id)
+            if not row or not row.get("per_hop_details"):
+                continue
+            from eval.baselines.common import BaselineResult
+            predicted_hops = []
+            for hop in row["per_hop_details"]:
+                pred = hop.get("predicted", {})
+                if not pred or not pred.get("source"):
+                    continue
+                # 用 name_to_label 反查 label，找不到默认 Cause（最常见）
+                src_label = name_to_label.get(pred["source"], "Cause")
+                tgt_label = name_to_label.get(pred["target"], "Cause")
+                predicted_hops.append(type("PredictedHop", (), {
+                    "source": type("GraphNode", (), {
+                        "name": pred["source"], "label": src_label
+                    })(),
+                    "target": type("GraphNode", (), {
+                        "name": pred["target"], "label": tgt_label
+                    })(),
+                    "edge_name": pred.get("edge", ""),
+                })())
+            if predicted_hops:
+                baseline_results[bname] = BaselineResult(
+                    baseline_name=bname,
+                    predicted_hops=predicted_hops,
+                    elapsed_seconds=row.get("elapsed_sec", 0),
+                    error=row.get("error"),
+                )
+                baseline_metrics[bname] = {
+                    "recall": row.get("recall", 0),
+                    "precision": row.get("precision", 0),
+                    "temporal_accuracy": row.get("temporal_accuracy", 0),
+                    "path_error_rate": row.get("path_error_rate", 1),
+                    "hallucination_rate": row.get("hallucination_rate_overall", 0),
+                    "provenance": row.get("provenance_completeness", 0),
+                    "elapsed_sec": row.get("elapsed_sec", 0),
+                    "claim_count": row.get("claim_count", 0),
+                    # arXiv:2506.02404 §3.2 — 图构建质量
+                    "entity_recall": row.get("entity_recall", 0),
+                    "entity_precision": row.get("entity_precision", 0),
+                    "relation_recall": row.get("relation_recall", 0),
+                    "pipeline_f1": row.get("pipeline_f1", 0),
+                    # arXiv:2506.02404 §3.3 — 推理质量
+                    "r_score": row.get("r_score", 0),
+                    "ar_score": row.get("ar_score", 0),
+                    "em": row.get("em", 0),
+                }
+
+    # 如果 cache 没有，实时跑指定 baseline
+    if not baseline_results and s.controller is not None:
+        try:
             from eval.baselines.b4_full import B4FullGraphRAG
-            runner = B4FullGraphRAG(
-                controller=s.controller,
-                decomposer=s.decomposer,
-                verifier=s.verifier,
-            )
+            runner = B4FullGraphRAG(controller=s.controller, decomposer=s.decomposer, verifier=s.verifier)
             br = runner.predict(case)
             baseline_results[baseline] = br
-        elif baseline == "B3_NoTemporal" and s.controller is not None:
-            from eval.baselines.b3_no_temporal import B3NoTemporal
-            runner = B3NoTemporal(
-                controller=s.controller,
-                decomposer=s.decomposer,
-                verifier=s.verifier,
-            )
-            br = runner.predict(case)
-            baseline_results[baseline] = br
-    except Exception as e:
-        logger.exception(f"case_study 跑 {baseline} 失败")
-        raise HTTPException(500, f"baseline 跑失败: {e}")
+        except Exception as ex:
+            logger.exception(f"case_study 跑 {baseline} 失败: {ex}")
+
+    # 跑 to_g6_data
+    try:
+        from scripts.export_case_study import to_g6_data
+    except ImportError:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "export_case_study", PROJECT_ROOT / "scripts" / "export_case_study.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore
+        to_g6_data = mod.to_g6_data
 
     g6 = to_g6_data(case, baseline_results)
     g6["query"] = case.query
     g6["query_time"] = case.query_time
-    g6["ground_truth"] = case.ground_truth_free_text
+    g6["ground_truth_text"] = case.ground_truth_free_text
+    g6["metrics"] = baseline_metrics.get(baseline, {})
+    g6["selected_baseline"] = baseline
     return g6
 
 
@@ -575,6 +648,7 @@ async def eval_run(req: EvalRequest):
         report = aggregate_metrics(name, case_results)
         report_objs[name] = report
         overall = report.overall
+        # GraphRAG-Bench §3.2-3.3 借鉴：暴露 7 个新指标 key
         results[name] = {
             "path_error_rate": round(overall.path_error_rate, 3),
             "hallucination_rate_overall": round(overall.hallucination_rate_overall, 3),
@@ -583,6 +657,15 @@ async def eval_run(req: EvalRequest):
             "precision": round(overall.precision, 3),
             "temporal_accuracy": round(overall.temporal_accuracy, 3),
             "provenance_completeness": round(overall.provenance_completeness, 3),
+            # arXiv:2506.02404 §3.2 — 图构建质量
+            "entity_recall": round(overall.entity_recall, 3),
+            "entity_precision": round(overall.entity_precision, 3),
+            "relation_recall": round(overall.relation_recall, 3),
+            "pipeline_f1": round(overall.pipeline_f1, 3),
+            # arXiv:2506.02404 §3.3 — 推理质量
+            "r_score": round(overall.r_score, 3),
+            "ar_score": round(overall.ar_score, 3),
+            "em": round(overall.em, 3),
         }
 
     # 生成 markdown summary
