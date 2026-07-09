@@ -175,19 +175,26 @@ def test_g6_data_format_valid():
         assert "label" in e
         assert "category" in e
 
-    # ground truth 节点数：2 跳 = 4 个（source+target × 2）
+    # ground truth 节点数：2 跳共享中间节点 = 3 个（Comp, Symptom, Cause）
+    # 注意：之前的旧版按 source/target 分别建节点会得到 4 个，但 2 跳应该只有 3 个不同节点
     gt_nodes = [n for n in g6["nodes"] if n["category"] == "ground_truth"]
-    assert len(gt_nodes) == 4, f"期望 4 个 ground_truth 节点，实际 {len(gt_nodes)}"
+    assert len(gt_nodes) == 3, f"期望 3 个 ground_truth 节点（2 跳共享中间），实际 {len(gt_nodes)}"
 
     # ground truth 边数 = 2 跳
     gt_edges = [e for e in g6["edges"] if e["category"] == "ground_truth"]
     assert len(gt_edges) == 2, f"期望 2 条 ground_truth 边，实际 {len(gt_edges)}"
 
+    # 验证边引用都正确（关键：旧版有 source:/target: 不同 id 断链问题）
+    node_ids = {n["id"] for n in g6["nodes"]}
+    for e in g6["edges"]:
+        assert e["source"] in node_ids, f"边 {e['id']} 引用不存在的 source: {e['source']}"
+        assert e["target"] in node_ids, f"边 {e['id']} 引用不存在的 target: {e['target']}"
+
     # predicted 节点应该有（baseline 命中 1 跳 → 2 个节点 1 条边）
     pred_nodes = [n for n in g6["nodes"] if n["category"] == "predicted"]
     assert len(pred_nodes) == 2
 
-    print(f"✅ G6 数据格式校验通过：{len(g6['nodes'])} 节点, {len(g6['edges'])} 边")
+    print(f"✅ G6 数据格式校验通过：{len(g6['nodes'])} 节点, {len(g6['edges'])} 边（无断链）")
 
 
 # ============================================================

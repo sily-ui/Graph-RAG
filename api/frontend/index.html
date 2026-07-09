@@ -160,13 +160,13 @@
       gap: var(--space-3);
     }
     .brand-mark {
-      width: 32px; height: 32px;
+      width: 36px; height: 36px;
       border-radius: var(--radius-md);
-      background: linear-gradient(135deg, #2e3a59 0%, #4a5878 100%);
+      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #ec4899 100%);
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: var(--shadow-sm);
+      box-shadow: 0 2px 8px rgba(124, 58, 237, 0.25), var(--shadow-sm);
     }
     .brand-mark svg { width: 18px; height: 18px; }
     .brand-text {
@@ -342,8 +342,9 @@
       background: var(--color-surface-hover);
     }
     .case-item.active {
-      background: var(--color-brand-subtle);
-      border-color: var(--color-brand);
+      background: linear-gradient(135deg, rgba(124, 58, 237, 0.08) 0%, rgba(79, 70, 229, 0.05) 100%);
+      border-color: #7c3aed;
+      box-shadow: 0 1px 3px rgba(124, 58, 237, 0.12);
     }
     .case-item .case-id {
       display: inline-flex;
@@ -358,8 +359,8 @@
     .case-item .case-id .hop-tag {
       display: inline-block;
       padding: 1px 6px;
-      background: var(--color-brand-subtle);
-      color: var(--color-brand);
+      background: linear-gradient(135deg, #ede9fe 0%, #fce7f3 100%);
+      color: #6d28d9;
       border-radius: var(--radius-sm);
       font-size: 10px;
       font-weight: 600;
@@ -423,7 +424,10 @@
        ============================================================ */
     .canvas-area {
       position: relative;
-      background: var(--color-bg);
+      background:
+        radial-gradient(circle at 20% 0%, rgba(124, 58, 237, 0.04) 0%, transparent 40%),
+        radial-gradient(circle at 80% 100%, rgba(79, 70, 229, 0.04) 0%, transparent 40%),
+        var(--color-bg);
       overflow: hidden;
     }
     #graph-canvas {
@@ -639,8 +643,9 @@
     }
     .tab:hover { color: var(--color-text-primary); }
     .tab.active {
-      color: var(--color-brand);
-      border-bottom-color: var(--color-brand);
+      color: #6d28d9;
+      border-bottom-color: #7c3aed;
+      border-image: linear-gradient(90deg, #4f46e5 0%, #ec4899 100%) 1;
     }
     .tab-content {
       flex: 1;
@@ -1295,11 +1300,12 @@
         node: { type: 'circle' },
         edge: { type: 'line' },
         layout: {
-          type: 'dforce',
-          linkDistance: 140,
-          nodeStrength: -200,
-          collide: { radius: 50 },
-          alpha: 0.3,
+          type: 'dagre',
+          rankdir: 'LR',        // 左→右，符合因果时间流
+          align: 'UL',
+          nodesep: 40,
+          ranksep: 80,
+          controlPoints: true,
         },
         behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
         animation: { duration: 300, easing: 'ease-out' },
