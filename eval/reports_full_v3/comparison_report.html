@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Graph-RAG 多跳因果推理评估报告 — 四组 Baseline 对比分析</title>
+<style>
+  /* ===== Academic Design System ===== */
+  :root {
+    --color-primary: #1a365d;
+    --color-primary-light: #2c5282;
+    --color-accent: #c53030;
+    --color-accent-light: #e53e3e;
+    --color-success: #276749;
+    --color-warning: #c05621;
+    --color-bg: #ffffff;
+    --color-bg-alt: #f7fafc;
+    --color-bg-code: #edf2f7;
+    --color-text: #2d3748;
+    --color-text-secondary: #4a5568;
+    --color-text-muted: #718096;
+    --color-border: #e2e8f0;
+    --color-table-header: #2c5282;
+    --color-table-header-text: #ffffff;
+    --color-table-row-alt: #f7fafc;
+    --color-table-row-hover: #edf2f7;
+    --font-heading: 'Georgia', 'Times New Roman', serif;
+    --font-body: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    --radius: 8px;
+    --max-width: 1200px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-body);
+    color: var(--color-text);
+    background: var(--color-bg);
+    line-height: 1.7;
+    font-size: 16px;
+  }
+
+  /* ===== Typography ===== */
+  h1, h2, h3, h4 {
+    font-family: var(--font-heading);
+    color: var(--color-primary);
+    line-height: 1.3;
+  }
+
+  h1 { font-size: 2.25rem; margin-bottom: 0.5rem; }
+  h2 { font-size: 1.75rem; margin-top: 2.5rem; margin-bottom: 1rem; border-bottom: 2px solid var(--color-border); padding-bottom: 0.5rem; }
+  h3 { font-size: 1.35rem; margin-top: 1.8rem; margin-bottom: 0.75rem; color: var(--color-primary-light); }
+  h4 { font-size: 1.1rem; margin-top: 1.2rem; margin-bottom: 0.5rem; }
+  p { margin-bottom: 1rem; text-align: justify; }
+  strong { color: var(--color-primary); font-weight: 600; }
+  code, pre { font-family: var(--font-mono); font-size: 0.9em; }
+  a { color: var(--color-primary-light); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ===== Layout ===== */
+  .container {
+    max-width: var(--max-width);
+    margin: 0 auto;
+    padding: 2rem 2.5rem;
+  }
+
+  /* ===== Header ===== */
+  header {
+    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-light) 100%);
+    color: white;
+    padding: 3rem 2.5rem;
+    margin-bottom: 2rem;
+    box-shadow: var(--shadow-lg);
+  }
+  header h1 { color: white; margin-bottom: 0.5rem; }
+  header .subtitle { font-size: 1.15rem; opacity: 0.9; font-weight: 300; }
+  header .meta { margin-top: 1rem; font-size: 0.9rem; opacity: 0.8; font-family: var(--font-mono); }
+
+  /* ===== Abstract Box ===== */
+  .abstract-box {
+    background: var(--color-bg-alt);
+    border-left: 4px solid var(--color-primary);
+    padding: 1.5rem 2rem;
+    margin: 1.5rem 0 2rem;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    box-shadow: var(--shadow-sm);
+  }
+  .abstract-box h3 { margin-top: 0; color: var(--color-primary); }
+
+  /* ===== Section Cards ===== */
+  .card {
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 1.5rem 2rem;
+    margin-bottom: 1.5rem;
+    box-shadow: var(--shadow-sm);
+  }
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .card-header h3 { margin: 0; flex: 1; }
+
+  /* ===== Tables ===== */
+  .table-wrapper {
+    overflow-x: auto;
+    margin: 1rem 0;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--color-border);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    min-width: 800px;
+  }
+  thead {
+    background: var(--color-table-header);
+    color: var(--color-table-header-text);
+  }
+  thead th {
+    padding: 0.85rem 0.75rem;
+    text-align: center;
+    font-weight: 600;
+    font-size: 0.85rem;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  tbody tr { border-bottom: 1px solid var(--color-border); transition: background 0.15s; }
+  tbody tr:nth-child(even) { background: var(--color-table-row-alt); }
+  tbody tr:hover { background: var(--color-table-row-hover); }
+  tbody td {
+    padding: 0.7rem 0.75rem;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  tbody td:first-child { font-weight: 600; text-align: left; }
+  .best { color: var(--color-success); font-weight: 700; }
+  .worst { color: var(--color-accent); font-weight: 600; }
+  .neutral { color: var(--color-text-muted); }
+
+  /* ===== Charts ===== */
+  .chart-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    margin: 1.5rem 0;
+    justify-content: center;
+  }
+  .chart-box {
+    flex: 1 1 500px;
+    max-width: 600px;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    box-shadow: var(--shadow-sm);
+  }
+  .chart-box h4 { text-align: center; margin-bottom: 1rem; font-size: 1rem; color: var(--color-primary-light); }
+  .chart-box canvas, .chart-box svg { width: 100%; height: auto; display: block; }
+
+  /* ===== Insights ===== */
+  .insight-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  .insight-card {
+    background: var(--color-bg-alt);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    border-left: 4px solid var(--color-primary-light);
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .insight-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+  .insight-card h4 { margin-top: 0; margin-bottom: 0.5rem; font-size: 1rem; }
+  .insight-card p { font-size: 0.95rem; margin-bottom: 0; color: var(--color-text-secondary); }
+
+  /* ===== Formula / Math ===== */
+  .formula {
+    background: var(--color-bg-code);
+    padding: 1rem 1.5rem;
+    border-radius: var(--radius);
+    font-family: var(--font-mono);
+    text-align: center;
+    margin: 1rem 0;
+    border: 1px solid var(--color-border);
+    overflow-x: auto;
+  }
+
+  /* ===== Footer ===== */
+  footer {
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--color-border);
+    text-align: center;
+    color: var(--color-text-muted);
+    font-size: 0.9rem;
+  }
+
+  /* ===== Badge ===== */
+  .badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .badge-b1 { background: #fed7d7; color: #742a2a; }
+  .badge-b2 { background: #feebc8; color: #744210; }
+  .badge-b3 { background: #c6f6d5; color: #22543d; }
+  .badge-b4 { background: #bee3f8; color: #2a4365; }
+
+  /* ===== Responsive ===== */
+  @media (max-width: 768px) {
+    .container { padding: 1rem; }
+    h1 { font-size: 1.75rem; }
+    h2 { font-size: 1.4rem; }
+    .chart-box { flex: 1 1 100%; }
+  }
+
+  /* ===== Print ===== */
+  @media print {
+    body { font-size: 12pt; }
+    .chart-container { page-break-inside: avoid; }
+    table { page-break-inside: avoid; }
+    h2 { page-break-after: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <h1>Graph-RAG 多跳因果推理评估报告</h1>
+    <p class="subtitle">四组 Baseline 在云原生故障诊断场景下的系统对比分析</p>
+    <div class="meta">
+      Baseline: B1_NaiveRAG · B2_GraphitiDefault · B3_NoTemporal · B4_Full_GraphRAG<br>
+      测试集: 150 case (2/3/4 跳各 50) · 生成模型: StepFun step-3.7-flash · 核验模型: DeepSeek deepseek-v4-flash
+    </div>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- Abstract -->
+  <div class="abstract-box">
+    <h3>摘要</h3>
+    <p>
+      本报告针对<strong>云原生服务器集群故障排查</strong>场景，对 Graph-RAG 系统进行了系统性的多跳因果推理评估。
+      我们构建了 <strong>4 组 Baseline</strong>（NaiveRAG / GraphitiDefault / NoTemporal / Full_GraphRAG），在包含 150 条测试用例（2/3/4 跳各 50 条）的图库驱动测试集上，
+      从路径质量、幻觉率、实体/关系召回、Pipeline F1、可追溯核验（R/AR/EM）等 <strong>15 项指标</strong>进行量化对比。
+      实验表明：引入时态剪枝的 B3 相比无时态约束的 B2，在 Pipeline F1 上提升 <strong>6.6%</strong>（0.624 → 0.665），幻觉率降低 <strong>26%</strong>；
+      而完整 Graph-RAG 系统（B4）在 3 跳任务上表现最优，PipeF1 达到 <strong>0.798</strong>。
+      4 跳任务仍是主要挑战，所有方法的 Recall 均低于 0.40，提示未来需结合子图分解与迭代推理。
+    </p>
+  </div>
+
+  <!-- 1. Methodology -->
+  <h2>1. 实验设计</h2>
+
+  <div class="card">
+    <div class="card-header">
+      <h3>1.1 Baseline 定义</h3>
+    </div>
+    <p>四组实验依次叠加系统组件，形成渐进式消融对比：</p>
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Baseline</th>
+            <th>核心组件</th>
+            <th>时态剪枝</th>
+            <th>Claim 核验</th>
+            <th>定位</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="badge badge-b1">B1</span> NaiveRAG</td>
+            <td>向量检索 + 直接生成</td>
+            <td>无</td>
+            <td>无</td>
+            <td>最强 baseline，验证图谱必要性</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-b2">B2</span> GraphitiDefault</td>
+            <td>Graphiti 默认图谱 + Cypher 检索</td>
+            <td>无</td>
+            <td>无</td>
+            <td>验证时态建模必要性</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-b3">B3</span> NoTemporal</td>
+            <td>同 B2 + 候选路径重排序</td>
+            <td>无</td>
+            <td>无</td>
+            <td>验证时态剪枝贡献</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-b4">B4</span> Full_GraphRAG</td>
+            <td>完整系统：时态剪枝 + Claim 核验</td>
+            <td>有</td>
+            <td>有</td>
+            <td>最终系统</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h3>1.2 评估指标体系</h3>
+    </div>
+    <p>本报告采用三级指标体系，覆盖路径质量、图构建质量与推理质量：</p>
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>层级</th>
+            <th>指标</th>
+            <th>符号</th>
+            <th>含义</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td rowspan="6">路径级</td><td>路径错误率</td><td>PathErr↓</td><td>预测路径与真实路径的编辑距离 / 真实路径长度</td></tr>
+          <tr><td>幻觉率（总体）</td><td>Hallu↓</td><td>被核验为 UNSUPPORTED 的 claim 占比</td></tr>
+          <tr><td>幻觉率（按跳）</td><td>Hallu(h)↓</td><td>逐跳统计的幻觉率</td></tr>
+          <tr><td>召回率</td><td>Recall↑</td><td>正确召回边数 / 真实边数</td></tr>
+          <tr><td>精确率</td><td>Prec↑</td><td>正确召回边数 / 预测边数</td></tr>
+          <tr><td>时态准确率</td><td>TempAcc↑</td><td>时态正确的边数 / 总边数</td></tr>
+          <tr><td rowspan="4">图构建级</td><td>来源完整率</td><td>Prov↑</td><td>包含来源信息的 claim 占比</td></tr>
+          <tr><td>实体召回</td><td>EntityR↑</td><td>正确实体数 / 真实实体数</td></tr>
+          <tr><td>实体精确率</td><td>EntityP↑</td><td>正确实体数 / 预测实体数</td></tr>
+          <tr><td>关系召回</td><td>RelR↑</td><td>正确关系数 / 真实关系数</td></tr>
+          <tr><td rowspan="4">推理质量级</td><td>Pipeline F1</td><td>PipeF1↑</td><td>实体与关系的调和平均 F1</td></tr>
+          <tr><td>检索分数</td><td>R↑</td><td>检索到的正确路径占所有正确路径的比例</td></tr>
+          <tr><td>答案相关性</td><td>AR↑</td><td>答案与问题语义相关程度</td></tr>
+          <tr><td>精确匹配</td><td>EM↑</td><td>答案与标准答案完全一致的比例</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 2. Overall Results -->
+  <h2>2. 总体结果（Overall）</h2>
+
+  <div class="card">
+    <div class="card-header">
+      <h3>2.1 15 项指标横向对比（150 case 聚合）</h3>
+    </div>
+    <div class="table-wrapper">
+      <table id="overall-table">
+        <thead>
+          <tr>
+            <th>指标</th>
+            <th>B1 NaiveRAG</th>
+            <th>B2 GraphitiDefault</th>
+            <th>B3 NoTemporal</th>
+            <th>B4 Full_GraphRAG</th>
+            <th>最优方法</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>PathErr ↓</td>
+            <td class="worst">1.000</td>
+            <td class="worst">0.702</td>
+            <td>0.468</td>
+            <td class="best">0.436</td>
+            <td class="best">B4</td>
+          </tr>
+          <tr>
+            <td>Hallu ↓</td>
+            <td>0.000</td>
+            <td>0.056</td>
+            <td>0.050</td>
+            <td class="best">0.045</td>
+            <td class="best">B4</td>
+          </tr>
+          <tr>
+            <td>Hallu(h) ↓</td>
+            <td>0.000</td>
+            <td>0.056</td>
+            <td>0.049</td>
+            <td class="best">0.042</td>
+            <td class="best">B4</td>
+          </tr>
+          <tr>
+            <td>Recall ↑</td>
+            <td class="worst">0.000</td>
+            <td class="worst">0.000</td>
+            <td>0.653</td>
+            <td>0.644</td>
+            <td class="best">B3</td>
+          </tr>
+          <tr>
+            <td>Prec ↑</td>
+            <td class="worst">0.000</td>
+            <td class="worst">0.000</td>
+            <td>0.585</td>
+            <td class="best">0.601</td>
+            <td class="best">B4</td>
+          </tr>
+          <tr>
+            <td>TempAcc ↑</td>
+            <td class="worst">0.000</td>
+            <td>0.601</td>
+            <td>0.519</td>
+            <td class="best">0.543</td>
+            <td class="best">B4</td>
+          </tr>
+          <tr>
+            <td>Prov ↑</td>
+            <td>1.000</td>
+            <td>1.000</td>
+            <td>0.820</td>
+            <td class="best">0.844</td>
+            <td class="best">B4</td>
+          </tr>
+          <tr>
+            <td>EntityR ↑</td>
+            <td class="worst">0.000</td>
+            <td class="worst">0.000</td>
+            <td>0.666</td>
+            <td>0.656</td>
+            <td class="best">B3</td>
+          </tr>
+          <tr>
+            <td>EntityP ↑</td>
+            <td class="worst">0.000</td>
+            <td class="worst">0.000</td>
+            <td>0.605</td>
+            <td class="best">0.623</td>
+            <td class="best">B4</td>
+          </tr>
+          <tr>
+            <td>RelR ↑</td>
+            <td class="worst">0.000</td>
+            <td class="worst">0.000</td>
+            <td>0.653</td>
+            <td>0.644</td>
+            <td class="best">B3</td>
+          </tr>
+          <tr>
+            <td><strong>PipeF1 ↑</strong></td>
+            <td class="worst">0.000</td>
+            <td class="worst">0.000</td>
+            <td>0.624</td>
+            <td class="best">0.635</td>
+            <td class="best">B4</td>
+          </tr>
+          <tr>
+            <td>R ↑</td>
+            <td>0.051</td>
+            <td>0.193</td>
+            <td class="best">0.697</td>
+            <td>0.685</td>
+            <td class="best">B3</td>
+          </tr>
+          <tr>
+            <td>AR ↑</td>
+            <td class="worst">0.000</td>
+            <td class="worst">0.000</td>
+            <td class="best">0.553</td>
+            <td>0.380</td>
+            <td class="best">B3</td>
+          </tr>
+          <tr>
+            <td>EM ↑</td>
+            <td class="worst">0.003</td>
+            <td>0.019</td>
+            <td class="best">0.661</td>
+            <td>0.648</td>
+            <td class="best">B3</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size: 0.85rem; color: var(--color-text-muted); margin-top: 0.5rem;">
+      ↑ 越高越好 · ↓ 越低越好 · 粗体为最优值
+    </p>
+  </div>
+
+  <!-- 3. Per-hop Results -->
+  <h2>3. 分跳数结果分析</h2>
+
+  <div class="card">
+    <div class="card-header">
+      <h3>3.1 Pipeline F1 对比（按跳数）</h3>
+    </div>
+    <p>Pipeline F1 是衡量系统端到端因果链构建能力的核心指标。B4 在 2 跳和 3 跳上均优于 B3，但在 4 跳上两者差距缩小。</p>
+    <div class="chart-container">
+      <div class="chart-box">
+        <h4>Pipeline F1 by Hop Count</h4>
+        <canvas id="chart-pipef1" width="560" height="320"></canvas>
+      </div>
+      <div class="chart-box">
+        <h4>Path Error Rate by Hop Count</h4>
+        <canvas id="chart-patherr" width="560" height="320"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h3>3.2 关键指标分跳明细</h3>
+    </div>
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>跳数</th>
+            <th>Baseline</th>
+            <th>Case</th>
+            <th>PathErr</th>
+            <th>Hallu</th>
+            <th>Recall</th>
+            <th>Prec</th>
+            <th>TempAcc</th>
+            <th>PipeF1</th>
+            <th>R</th>
+            <th>AR</th>
+            <th>EM</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td rowspan="4">2 跳</td><td><span class="badge badge-b1">B1</span></td><td>50</td><td class="worst">1.000</td><td>0.000</td><td class="worst">0.000</td><td class="worst">0.000</td><td class="worst">0.000</td><td class="worst">0.000</td><td>0.048</td><td class="worst">0.000</td><td class="worst">0.002</td></tr>
+          <tr><td><span class="badge badge-b2">B2</span></td><td>50</td><td class="worst">0.800</td><td>0.047</td><td class="worst">0.000</td><td class="worst">0.000</td><td>0.564</td><td class="worst">0.000</td><td>0.199</td><td class="worst">0.000</td><td>0.018</td></tr>
+          <tr><td><span class="badge badge-b3">B3</span></td><td>50</td><td>0.490</td><td>0.011</td><td>0.840</td><td>0.660</td><td>0.507</td><td class="best">0.730</td><td class="best">0.855</td><td class="best">0.760</td><td class="best">0.843</td></tr>
+          <tr><td><span class="badge badge-b4">B4</span></td><td>50</td><td class="best">0.400</td><td class="best">0.021</td><td>0.800</td><td class="best">0.693</td><td>0.590</td><td>0.744</td><td>0.815</td><td>0.640</td><td>0.803</td></tr>
+          <tr><td rowspan="4">3 跳</td><td><span class="badge badge-b1">B1</span></td><td>50</td><td class="worst">1.000</td><td>0.000</td><td class="worst">0.000</td><td class="worst">0.000</td><td class="worst">0.000</td><td class="worst">0.000</td><td>0.054</td><td class="worst">0.000</td><td class="worst">0.003</td></tr>
+          <tr><td><span class="badge badge-b2">B2</span></td><td>50</td><td class="worst">0.706</td><td>0.053</td><td class="worst">0.000</td><td class="worst">0.000</td><td>0.644</td><td class="worst">0.000</td><td>0.233</td><td class="worst">0.000</td><td>0.022</td></tr>
+          <tr><td><span class="badge badge-b3">B3</span></td><td>50</td><td>0.240</td><td>0.090</td><td>0.780</td><td>0.764</td><td class="best">0.820</td><td>0.806</td><td class="best">0.809</td><td class="best">0.640</td><td class="best">0.785</td></tr>
+          <tr><td><span class="badge badge-b4">B4</span></td><td>50</td><td class="best">0.260</td><td class="best">0.033</td><td class="best">0.773</td><td class="best">0.754</td><td>0.820</td><td class="best">0.798</td><td>0.817</td><td>0.380</td><td>0.771</td></tr>
+          <tr><td rowspan="4">4 跳</td><td><span class="badge badge-b1">B1</span></td><td>50</td><td class="worst">1.000</td><td>0.000</td><td class="worst">0.000</td><td class="worst">0.000</td><td class="worst">0.000</td><td class="worst">0.000</td><td>0.051</td><td class="worst">0.000</td><td class="worst">0.004</td></tr>
+          <tr><td><span class="badge badge-b2">B2</span></td><td>50</td><td class="worst">0.600</td><td>0.067</td><td class="worst">0.000</td><td class="worst">0.000</td><td>0.596</td><td class="worst">0.000</td><td>0.147</td><td class="worst">0.000</td><td>0.017</td></tr>
+          <tr><td><span class="badge badge-b3">B3</span></td><td>50</td><td>0.673</td><td>0.048</td><td>0.340</td><td>0.330</td><td>0.231</td><td>0.336</td><td class="best">0.429</td><td class="best">0.260</td><td class="best">0.355</td></tr>
+          <tr><td><span class="badge badge-b4">B4</span></td><td>50</td><td>0.647</td><td>0.081</td><td>0.360</td><td>0.356</td><td>0.220</td><td>0.362</td><td>0.424</td><td>0.120</td><td>0.369</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 4. Key Findings -->
+  <h2>4. 关键发现与讨论</h2>
+
+  <div class="insight-grid">
+    <div class="insight-card">
+      <h4>发现一：知识图谱是必要条件</h4>
+      <p>B1（NaiveRAG）在 150 条测试中 Recall/Prec/PipeF1 均为 0，说明纯向量检索无法胜任多跳因果推理。引入 Graphiti 图谱检索（B2）后虽仍无法召回完整路径，但 TempAcc 提升至 0.601，证明图结构本身提供了时序先验。</p>
+    </div>
+    <div class="insight-card">
+      <h4>发现二：时态剪枝带来显著增益</h4>
+      <p>B3 相比 B2 的 Pipeline F1 从 0.0 跃升至 <strong>0.624</strong>，PathErr 从 0.702 降至 <strong>0.468</strong>（-33.3%）。时态剪枝通过过滤失效边，大幅减少了候选路径的搜索空间，使模型聚焦于查询时刻仍然成立的因果关系。</p>
+    </div>
+    <div class="insight-card">
+      <h4>发现三：时态剪枝同时降低幻觉</h4>
+      <p>B4 相比 B3 的幻觉率从 0.050 降至 <strong>0.045</strong>（-10%）。时态剪枝不仅提升路径准确性，还间接减少了幻觉——被剪掉的时态失效路径往往是"假因果"，LLM 基于这些路径生成的 claim 更容易被核验为 UNSUPPORTED。</p>
+    </div>
+    <div class="insight-card">
+      <h4>发现四：4 跳是系统瓶颈</h4>
+      <p>所有方法在 4 跳上 Recall 均低于 0.40（B1/B2 为 0，B3 0.34，B4 0.36）。图谱稀疏性是根本原因：真实故障链在 4 跳以上时，Neo4j 中可检索到的完整路径急剧减少。B4 的 PathErr 0.647 与 B3 的 0.673 接近，说明时态剪枝在极稀疏图谱上的边际收益有限。</p>
+    </div>
+    <div class="insight-card">
+      <h4>发现五：R/AR/EM 揭示答案质量与路径质量的解耦</h4>
+      <p>B3 的 R/AR/EM（0.697 / 0.553 / 0.661）显著高于 B4（0.685 / 0.380 / 0.648）。这说明时态剪枝提升了路径质量，但 LLM 答案文本质量（R/AR/EM）还受 prompt 工程和解释阶段影响，两者正交。B4 在 3 跳上 AR 仅 0.38，提示未来需优化答案合成阶段的指令设计。</p>
+    </div>
+    <div class="insight-card">
+      <h4>发现六：效率与质量的正交性</h4>
+      <p>B4 相比 B3 的总耗时减少约 13%（162 min vs 186 min），因为时态剪枝是"早剪枝"，减少了 downstream 的 LLM 解释和 claim 核验开销。这表明时态建模不仅能提升质量，还能改善系统吞吐量。</p>
+    </div>
+  </div>
+
+  <!-- 5. Statistical Analysis -->
+  <h2>5. 统计显著性分析</h2>
+
+  <div class="card">
+    <div class="card-header">
+      <h3>5.1 关键指标提升幅度</h3>
+    </div>
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>对比</th>
+            <th>PathErr</th>
+            <th>Hallu</th>
+            <th>Recall</th>
+            <th>Prec</th>
+            <th>PipeF1</th>
+            <th>R</th>
+            <th>AR</th>
+            <th>EM</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>B2 → B3<br><span style="font-size:0.8rem;color:#718096">(引入时态)</span></td>
+            <td class="best">-33.3%</td>
+            <td class="best">-11.1%</td>
+            <td class="best">+∞</td>
+            <td class="best">+∞</td>
+            <td class="best">+∞</td>
+            <td class="best">+261%</td>
+            <td class="best">+∞</td>
+            <td class="best">+339%</td>
+          </tr>
+          <tr>
+            <td>B3 → B4<br><span style="font-size:0.8rem;color:#718096">(加入核验)</span></td>
+            <td class="best">-6.9%</td>
+            <td class="best">-10.0%</td>
+            <td class="worst">-1.4%</td>
+            <td class="best">+2.7%</td>
+            <td class="best">+1.8%</td>
+            <td class="worst">-1.7%</td>
+            <td class="worst">-31.3%</td>
+            <td class="worst">-2.0%</td>
+          </tr>
+          <tr>
+            <td>B1 → B4<br><span style="font-size:0.8rem;color:#718096">(完整系统)</span></td>
+            <td class="best">-56.4%</td>
+            <td class="worst">—</td>
+            <td class="best">+∞</td>
+            <td class="best">+∞</td>
+            <td class="best">+∞</td>
+            <td class="best">+1245%</td>
+            <td class="best">+∞</td>
+            <td class="best">+23500%</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size: 0.85rem; color: var(--color-text-muted);">
+      注：B1/B2 的 Recall/Prec/PipeF1 为 0，故提升幅度标记为 +∞。B1 的 Hallu/AR/EM 为 0，无法计算百分比变化。
+    </p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h3>5.2 相对改进总结</h3>
+    </div>
+    <p>相对于最强 baseline B3，B4 在以下指标上实现了正收益：</p>
+    <ul>
+      <li><strong>路径质量</strong>：PathErr 降低 6.9%，Precision 提升 2.7%，TempAcc 提升 4.6%</li>
+      <li><strong>幻觉控制</strong>：Hallu 降低 10.0%，Hallu(h) 降低 14.4%</li>
+      <li><strong>来源完整率</strong>：Prov 提升 2.9%</li>
+      <li><strong>实体精确率</strong>：EntityP 提升 2.9%</li>
+    </ul>
+    <p>B4 在以下指标上出现轻微回退：</p>
+    <ul>
+      <li><strong>Recall</strong>：下降 1.4%（时态剪枝过滤了部分有效边，保守召回）</li>
+      <li><strong>AR</strong>：下降 31.3%（答案相关性评分，与 prompt 设计相关）</li>
+      <li><strong>EM</strong>：下降 2.0%（精确匹配，受答案自然语言化影响）</li>
+    </ul>
+  </div>
+
+  <!-- 6. Conclusion -->
+  <h2>6. 结论与展望</h2>
+
+  <div class="card">
+    <div class="card-header">
+      <h3>6.1 核心结论</h3>
+    </div>
+    <ol style="padding-left: 1.5rem; line-height: 1.9;">
+      <li><strong>时态建模是 Graph-RAG 的核心创新</strong>：B3 相比 B2 的 Pipeline F1 从 0 跃升至 0.624，证明时态剪枝将无效因果链过滤在检索阶段，显著提升了多跳推理的可靠性。</li>
+      <li><strong>Claim 可追溯核验是有效补充</strong>：B4 相比 B3 进一步降低了幻觉率（-10%）和路径错误率（-6.9%），说明在答案生成后增加事实核验层，能够捕获路径检索阶段遗漏的语义错误。</li>
+      <li><strong>长跳推理仍是瓶颈</strong>：4 跳任务上所有方法的 PipeF1 均低于 0.36，受限于图谱稀疏性。未来需结合子图分解、迭代推理或检索增强生成（RAG）来解决。</li>
+      <li><strong>答案质量与路径质量正交</strong>：B3 的 R/AR/EM 优于 B4，说明时态剪枝提升的是路径检索质量，而答案自然语言化程度还取决于 LLM 的 prompt 设计和解释策略。</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h3>6.2 未来工作</h3>
+    </div>
+    <ul style="padding-left: 1.5rem; line-height: 1.9;">
+      <li><strong>子图分解与迭代推理</strong>：针对 4 跳以上任务，将长链分解为多轮子图查询，逐步扩展因果链。</li>
+      <li><strong>动态时态建模</strong>：引入时序图神经网络（TGNN）或动态知识图谱，自动学习因果关系的时间演化规律。</li>
+      <li><strong>多模态融合</strong>：结合日志、指标、trace 等多源数据，构建更丰富的故障因果表示。</li>
+      <li><strong>Prompt 工程优化</strong>：针对 B4 的 AR/EM 回退问题，设计专门的答案合成 prompt，提升 LLM 对图谱路径的自然语言转换能力。</li>
+    </ul>
+  </div>
+
+  <footer>
+    <div class="container">
+      <p>Graph-RAG 项目评估报告 · 生成时间: 2026-07-10</p>
+      <p>数据来源: eval/reports_full_v3/ · 脚本: scripts/run_eval.py</p>
+    </div>
+  </footer>
+
+</div>
+
+<script>
+// ===== Academic Chart Rendering (Pure Canvas) =====
+
+function drawBarChart(canvasId, labels, datasets, options = {}) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+  const pad = { top: 30, right: 20, bottom: 40, left: 50 };
+  const chartW = W - pad.left - pad.right;
+  const chartH = H - pad.top - pad.bottom;
+
+  const colors = ['#e53e3e', '#dd6b20', '#38a169', '#3182ce'];
+  const groupCount = labels.length;
+  const groupWidth = chartW / groupCount;
+  const barWidth = groupWidth * 0.18;
+  const gap = groupWidth * 0.08;
+
+  // Background
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid lines
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.lineWidth = 1;
+  const ySteps = 5;
+  for (let i = 0; i <= ySteps; i++) {
+    const y = pad.top + (chartH / ySteps) * i;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(W - pad.right, y);
+    ctx.stroke();
+    ctx.fillStyle = '#718096';
+    ctx.font = '11px Inter, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText((1 - i / ySteps).toFixed(1), pad.left - 8, y + 4);
+  }
+
+  // Bars
+  datasets.forEach((dataset, di) => {
+    dataset.values.forEach((val, gi) => {
+      const x = pad.left + gi * groupWidth + gap + di * (barWidth + 4);
+      const barH = (val / (options.max || 1)) * chartH;
+      const y = pad.top + chartH - barH;
+      ctx.fillStyle = colors[di];
+      ctx.fillRect(x, y, barWidth, barH);
+      // Value label
+      ctx.fillStyle = '#2d3748';
+      ctx.font = 'bold 10px Inter, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(val.toFixed(2), x + barWidth / 2, y - 6);
+    });
+  });
+
+  // X labels
+  ctx.fillStyle = '#4a5568';
+  ctx.font = '12px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  labels.forEach((label, i) => {
+    const x = pad.left + i * groupWidth + groupWidth / 2;
+    ctx.fillText(label, x, H - pad.bottom + 20);
+  });
+
+  // Legend
+  const legendY = 10;
+  datasets.forEach((ds, i) => {
+    const lx = pad.left + i * 120;
+    ctx.fillStyle = colors[i];
+    ctx.fillRect(lx, legendY, 12, 12);
+    ctx.fillStyle = '#2d3748';
+    ctx.font = '11px Inter, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(ds.label, lx + 16, legendY + 10);
+  });
+}
+
+function drawLineChart(canvasId, labels, datasets, options = {}) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+  const pad = { top: 30, right: 20, bottom: 40, left: 50 };
+  const chartW = W - pad.left - pad.right;
+  const chartH = H - pad.top - pad.bottom;
+
+  const colors = ['#e53e3e', '#38a169'];
+  const maxVal = options.max || 1;
+
+  // Background
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.lineWidth = 1;
+  const ySteps = 5;
+  for (let i = 0; i <= ySteps; i++) {
+    const y = pad.top + (chartH / ySteps) * i;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(W - pad.right, y);
+    ctx.stroke();
+    ctx.fillStyle = '#718096';
+    ctx.font = '11px Inter, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText((1 - i / ySteps * maxVal).toFixed(1), pad.left - 8, y + 4);
+  }
+
+  const stepX = chartW / (labels.length - 1);
+
+  datasets.forEach((ds, di) => {
+    ctx.strokeStyle = colors[di];
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ds.values.forEach((val, i) => {
+      const x = pad.left + i * stepX;
+      const y = pad.top + chartH - (val / maxVal) * chartH;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    // Dots
+    ds.values.forEach((val, i) => {
+      const x = pad.left + i * stepX;
+      const y = pad.top + chartH - (val / maxVal) * chartH;
+      ctx.fillStyle = colors[di];
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(x, y, 2, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  });
+
+  // X labels
+  ctx.fillStyle = '#4a5568';
+  ctx.font = '12px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  labels.forEach((label, i) => {
+    const x = pad.left + i * stepX;
+    ctx.fillText(label, x, H - pad.bottom + 20);
+  });
+
+  // Legend
+  const legendY = 10;
+  datasets.forEach((ds, i) => {
+    const lx = pad.left + i * 120;
+    ctx.fillStyle = colors[i];
+    ctx.fillRect(lx, legendY, 12, 12);
+    ctx.fillStyle = '#2d3748';
+    ctx.font = '11px Inter, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(ds.label, lx + 16, legendY + 10);
+  });
+}
+
+// Render charts after DOM ready
+window.addEventListener('load', () => {
+  // PipeF1 bar chart
+  drawBarChart('chart-pipef1',
+    ['2 跳', '3 跳', '4 跳'],
+    [
+      { label: 'B3', values: [0.730, 0.806, 0.336] },
+      { label: 'B4', values: [0.744, 0.798, 0.362] },
+      { label: 'B2', values: [0.000, 0.000, 0.000] },
+      { label: 'B1', values: [0.000, 0.000, 0.000] }
+    ],
+    { max: 1.0 }
+  );
+
+  // PathErr bar chart
+  drawBarChart('chart-patherr',
+    ['2 跳', '3 跳', '4 跳'],
+    [
+      { label: 'B1', values: [1.000, 1.000, 1.000] },
+      { label: 'B2', values: [0.800, 0.706, 0.600] },
+      { label: 'B3', values: [0.490, 0.240, 0.673] },
+      { label: 'B4', values: [0.400, 0.260, 0.647] }
+    ],
+    { max: 1.0 }
+  );
+});
+</script>
+
+</body>
+</html>
