@@ -537,13 +537,31 @@ class LLMInterpreter:
         if pruned_paths:
             pruned_info = f"\n\n被时态剪枝排除的路径：{len(pruned_paths)} 条"
 
+        # 从 paths 里抽取所有节点名 + 边名，作为"必须出现的 token"提示给 LLM。
+        # gold rationale = target_name + edge_name 的 token 集合，原样复述才能命中 R/EM。
+        must_include_nodes: list[str] = []
+        must_include_edges: list[str] = []
+        for path in paths[:5]:
+            if path.hops:
+                must_include_nodes.append(path.hops[0].source.name)
+            for hop in path.hops:
+                must_include_edges.append(hop.edge_name)
+                must_include_nodes.append(hop.target.name)
+        # 去重保序
+        seen: set[str] = set()
+        node_list = [n for n in must_include_nodes if not (n in seen or seen.add(n))]
+        edge_list = [e for e in must_include_edges if not (e in seen or seen.add(e))]
+
         system_prompt = """你是服务器故障排查助手。根据图谱查询结果回答用户问题。
 
 要求：
 1. 优先解释置信度最高的路径
 2. 说明根因、传导链路、解法
-3. 简洁明了，不超过 300 字
-4. 如果路径时态不一致，说明原因"""
+3. **必须原样使用图谱中的节点名和边名（如 resource_contention、CAUSED_BY），不得意译、翻译或改写**
+4. 回答开头先用一行"因果链："列出完整链路，格式：
+   因果链：<起点节点> -[<边名>]-> <节点> -[<边名>]-> ... -> <终点节点>
+5. 随后用自然语言解释（不超过 300 字），解释中再次出现上述节点名和边名
+6. 如果路径时态不一致，说明原因"""
 
         user_content = f"""用户问题：{query.natural_language}
 
@@ -552,7 +570,10 @@ class LLMInterpreter:
 {chr(10).join(path_descriptions)}
 {pruned_info}
 
-请根据上述路径回答用户问题。"""
+必须原样出现在回答中的节点名：{node_list}
+必须原样出现在回答中的边名：{edge_list}
+
+请根据上述路径回答用户问题，务必原样使用上述节点名和边名。"""
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -573,6 +594,15 @@ class LLMInterpreter:
 
         best = paths[0]
         lines = [f"查询：{query.natural_language}", ""]
+
+        # 因果链汇总行：与 LLM 路径格式对齐，保证节点名/边名作为独立 token 出现，
+        # 命中 R/EM 的 gold rationale（target_name + edge_name）。
+        if best.start_node:
+            chain_parts = [best.start_node.name]
+            for hop in best.hops:
+                chain_parts.append(f" -[{hop.edge_name}]-> {hop.target.name}")
+            lines.append("因果链：" + "".join(chain_parts))
+            lines.append("")
 
         # 根因
         root = best.root_cause

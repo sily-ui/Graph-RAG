@@ -123,6 +123,34 @@ class TestEvaluateCaseIntegratesNewMetrics(unittest.TestCase):
         # 无核验 claim → AR = 0.0 (不返回 None 时填 0)
         self.assertEqual(out["ar_score"], 0.0)
 
+    def test_05_answer_param_overrides_empty_case_answer(self):
+        """显式传入的 answer 参数应优先于 case.answer（模拟生产路径：
+        真实 TestCase 没有 answer 字段，answer 由 BaselineResult.answer 传入）。"""
+        from dataclasses import replace
+        # case.answer="" 模拟真实 TestCase（无 answer 字段）
+        case_no_answer = replace(self.case, answer="")
+        out = evaluate_case(
+            case=case_no_answer,
+            predicted_hops=self.predicted,
+            verified_claims=[],
+            answer="b caused by R1 then c via R2",
+        )
+        # gold rationale = "b c R1 R2"，answer 全含 → R 应 ≥ 0.75
+        self.assertGreater(out["r_score"], 0.0, "显式传入的 answer 应被采用，R 不应为 0")
+
+    def test_06_empty_answer_yields_zero_r(self):
+        """既不传 answer 参数、case.answer 又为空时（真实生产 bug 场景），R 应为 0。"""
+        from dataclasses import replace
+        case_no_answer = replace(self.case, answer="")
+        out = evaluate_case(
+            case=case_no_answer,
+            predicted_hops=self.predicted,
+            verified_claims=[],
+            # 不传 answer 参数
+        )
+        self.assertEqual(out["r_score"], 0.0)
+        self.assertEqual(out["em"], 0.0)
+
 
 class TestAggregateMetricsIncludesNewFields(unittest.TestCase):
 

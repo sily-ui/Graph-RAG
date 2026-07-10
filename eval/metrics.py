@@ -283,8 +283,24 @@ def evaluate_case(
     case: Any,
     predicted_hops: list[PathHop],
     verified_claims: list[VerifiedClaim] | None = None,
+    answer: str = "",
 ) -> dict:
-    """评估单条 case，返回所有指标。"""
+    """评估单条 case，返回所有指标。
+
+    Parameters
+    ----------
+    case : TestCase
+        测试用例（来自 testset_builder）。注意真实 TestCase 没有 answer 字段，
+        answer 必须通过下面的 ``answer`` 参数显式传入。
+    predicted_hops : list[PathHop]
+        预测路径的各跳。
+    verified_claims : list[VerifiedClaim] | None
+        幻觉核验 claims。
+    answer : str
+        baseline 生成的自然语言答案（来自 BaselineResult.answer）。
+        R/AR/EM 指标依赖此文本与 gold rationale 的 token 匹配。
+        若不传，回退到 ``case.answer``（兼容 FakeCase 等老用法）。
+    """
     query_time = datetime.fromisoformat(case.query_time)
     exp_path = case.expected_path
 
@@ -298,8 +314,9 @@ def evaluate_case(
     # GraphRAG-Bench §3.2 借鉴：图构建质量
     gc_metrics = compute_graph_construction_metrics(exp_path, predicted_hops)
     # GraphRAG-Bench §3.3 借鉴：推理质量
-    # 答案文本优先从 verified_claims 里取（已带核验），回退到 case 上的属性
-    answer_text = getattr(case, "answer", "") or ""
+    # 答案文本优先用显式传入的 answer（生产路径，来自 BaselineResult.answer）；
+    # 回退到 case.answer（兼容 FakeCase 等老调用）；再回退到 verified_claims。
+    answer_text = answer or getattr(case, "answer", "") or ""
     if not answer_text:
         # 兼容 dict 形式的 case
         answer_text = (

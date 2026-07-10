@@ -158,6 +158,7 @@ def run_eval(
                     case=case,
                     predicted_hops=result.predicted_hops,
                     verified_claims=result.verified_claims,
+                    answer=result.answer or "",
                 )
                 metrics["elapsed_sec"] = elapsed
                 metrics["error"] = err
