@@ -246,9 +246,12 @@ def compute_hallucination_rate(
     if not verified_claims:
         return 0.0, 0.0, {}
 
-    # 整体：CONTRADICTED 视为幻觉
+    # 整体：CONTRADICTED 视为幻觉，UNSUPPORTED 在无图谱 baseline 中也算幻觉
+    # —— 理由：若 LLM 回答不来自图谱路径，那就是"无来源主张"，本质即幻觉。
+    # 之前只算 CONTRADICTED，导致 B1_NaiveRAG（无图谱）幻觉率恒为 0，对比无意义。
     contradicted = sum(1 for c in verified_claims if c.verdict == VerdictEnum.CONTRADICTED)
-    overall_rate = contradicted / len(verified_claims)
+    unsupported = sum(1 for c in verified_claims if c.verdict == VerdictEnum.UNSUPPORTED)
+    overall_rate = (contradicted + unsupported) / len(verified_claims)
 
     # 逐跳
     per_hop: dict[int, list[VerifiedClaim]] = {}
@@ -261,7 +264,9 @@ def compute_hallucination_rate(
         cnt_contra = sum(1 for c in claims if c.verdict == VerdictEnum.CONTRADICTED)
         cnt_ent = sum(1 for c in claims if c.verdict == VerdictEnum.ENTAILED)
         cnt_uns = sum(1 for c in claims if c.verdict == VerdictEnum.UNSUPPORTED)
-        rate = cnt_contra / len(claims) if claims else 0.0
+        # 与 overall_rate 保持一致：CONTRADICTED + UNSUPPORTED 都算幻觉
+        # 之前只算 cnt_contra，导致 B1_NaiveRAG 逐跳幻觉率恒为 0
+        rate = (cnt_contra + cnt_uns) / len(claims) if claims else 0.0
         per_hop_stats[hop] = {
             "total": len(claims),
             "entailed": cnt_ent,

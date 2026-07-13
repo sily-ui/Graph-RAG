@@ -295,21 +295,56 @@ class LLMInterpreter:
         causal_chain 的 Cypher 只匹配 Symptom → Cause，solution_lookup 只匹配
         Cause → Solution。当用户问 machine-1-2 的根因/解法时，entity 是 Component
         名而非 Symptom/Cause 名，原 Cypher 返回 0 条路径。
+
+        另一项后处理：multi_hop_path 查询若原文含 "→" / "->" 链路描述，
+        且 LLM 只抽到 ≤1 个 symptom_keyword，则从原文直接抽链路中间实体
+        补全 symptom_keywords。这避免了 LLM 把 4 跳链路简化成 1 个关键词、
+        导致 Cypher symptom_kw 过滤过严而返回 0 条路径的问题。
         """
         import re
         intent = structured.intent
         entity = intent.target_entity
-        if not entity or not re.match(r"machine-\d+-\d+", entity):
-            return structured
-        if intent.query_type in (
-            QueryType.CAUSAL_CHAIN,
-            QueryType.SOLUTION_LOOKUP,
-            QueryType.SINGLE_ENTITY,
-        ):
-            original = intent.query_type.value
-            intent.query_type = QueryType.MULTI_HOP_PATH
-            intent.hop_count = 3
-            structured.metadata["post_processed"] = f"{original} -> multi_hop_path(3)"
+
+        # 1) Component 名触发 multi_hop_path 升级
+        if entity and re.match(r"machine-\d+-\d+", entity):
+            if intent.query_type in (
+                QueryType.CAUSAL_CHAIN,
+                QueryType.SOLUTION_LOOKUP,
+                QueryType.SINGLE_ENTITY,
+            ):
+                original = intent.query_type.value
+                intent.query_type = QueryType.MULTI_HOP_PATH
+                intent.hop_count = 3
+                structured.metadata["post_processed"] = f"{original} -> multi_hop_path(3)"
+
+        # 2) 链路文本兜底：从 "a → b → c → d" 抽出中间实体作为 symptom_keywords
+        if intent.query_type == QueryType.MULTI_HOP_PATH:
+            nl = structured.natural_language or ""
+            # 匹配 → 或 -> 分隔的实体名（容忍空格、中文/英文/数字/下划线/连字符）
+            arrow_parts = re.split(r"\s*(?:→|->)\s*", nl)
+            if len(arrow_parts) >= 3:
+                # 首尾通常是 Component 与 Solution，中间是 Symptom/Cause
+                middle = arrow_parts[1:-1]
+                # 过滤掉空串和"链路"/"路径"等描述性词
+                middle = [
+                    p.strip()
+                    for p in middle
+                    if p.strip() and not re.search(r"链路|路径|完整|深层|多跳|排查|根因|解法", p)
+                ]
+                # 已有 keywords 与新抽的取并集，去重保序
+                existing = list(intent.symptom_keywords or [])
+                merged = list(existing)
+                for kw in middle:
+                    if kw not in merged:
+                        merged.append(kw)
+                # 只在 LLM 抽得太少（< len(middle)）时才补全，避免覆盖 LLM 的合理判断
+                if len(existing) < max(len(middle), 2) and merged != existing:
+                    intent.symptom_keywords = merged
+                    structured.metadata.setdefault("post_processed", "")
+                    structured.metadata["post_processed"] += (
+                        f"; symptom_keywords backfilled from arrow chain: {middle}"
+                    )
+
         return structured
 
     def _llm_parse(self, natural_language: str) -> StructuredQuery:
@@ -341,6 +376,10 @@ class LLMInterpreter:
 - target_entity 是实体 ID（如 vm_001），不是描述
 - time_window 格式：{"start": "2024-01-01T00:00:00", "end": "2024-01-02T00:00:00"}
 - hop_count 只在 multi_hop_path 时设置（2/3/4），其他为 null
+- **重要**：若查询用箭头/链路格式列出多个实体（如 "kubelet → dns_error → cert_expired → ..."），
+  必须把链路里**所有**中间症状/根因名都放入 symptom_keywords（去掉首尾的 Component 与 Solution），
+  绝不能只保留最后一个。这是多跳路径查询的核心过滤条件。
+- 查询里出现"深层根因"/"多跳排查"/"完整链路"等措辞时，hop_count 至少为 3。
 - 只输出 JSON，不要其他文字"""
 
         messages = [

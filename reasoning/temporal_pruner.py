@@ -45,8 +45,15 @@ class PrunerConfig:
     # lag_seconds 容差倍数（实际时延在 [0, lag*tolerance] 内视为一致）
     LAG_TOLERANCE_MULTIPLIER = 2.0
 
-    # lag_seconds 最大容差（秒），即使 lag 很小也允许一定误差
-    LAG_MAX_TOLERANCE_SECONDS = 600
+    # lag_seconds 最大正向容差（秒）。SMD 真实数据集中相邻事件传播时间常达 20+ 分钟，
+    # 远超 lag 标注值；600s 过严会误剪真实路径。放宽到 3600s（1 小时）。
+    LAG_MAX_TOLERANCE_SECONDS = 3600
+
+    # 负向时延容差（秒）：允许"根因早于症状"的实际时延绝对值上限。
+    # SMD 真实数据集中 Cause 的 valid_at 常比 Symptom 早 30+ 分钟
+    # （根因先发生但后被记录/发现），原先与正向共用 600s 会误剪大量真实路径。
+    # 设为 7200s（2 小时）以容忍 SMD 的告警延迟特性。
+    LAG_NEGATIVE_TOLERANCE_SECONDS = 7200
 
     # 是否允许原因与症状同时刻（True=允许，False=必须严格早于）
     ALLOW_SIMULTANEOUS = True
@@ -183,8 +190,10 @@ def validate_path_temporal_consistency(
                     curr_lag * config.LAG_TOLERANCE_MULTIPLIER,
                     config.LAG_MAX_TOLERANCE_SECONDS,
                 )
-                # 允许实际时延略小于 lag（因果可能即时发生）
-                if actual_lag < -config.LAG_MAX_TOLERANCE_SECONDS:
+                # 允许实际时延略小于 lag（因果可能即时发生）。
+                # 负向容差独立配置：SMD 真实数据集中根因 valid_at 常早于症状，
+                # 用 LAG_NEGATIVE_TOLERANCE_SECONDS 容忍这种"先因后果"的记录特性。
+                if actual_lag < -config.LAG_NEGATIVE_TOLERANCE_SECONDS:
                     return False, (
                         f"第 {i + 1} 跳时延异常: 实际 {actual_lag}s "
                         f"远小于预期 lag {curr_lag}s"

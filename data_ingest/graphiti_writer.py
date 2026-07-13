@@ -63,19 +63,22 @@ def build_graphiti_client(config: Any | None = None):
 
     from data_ingest.local_embedder import build_local_embedder
 
-    # 构建 LLM 客户端（用生成 LLM 配置）
-    # 关键：DeepSeek 等只实现 /chat/completions 的 provider ，
-    # 必须用 OpenAIGenericClient（而非 OpenAIClient，后者调 /responses 端点会 404）。
-    # 同时设置 structured_output_mode='json_object' —— DeepSeek 不支持 json_schema 约束解码，
-    # graphiti-core 会在 prompt 中注入 schema 兜底。详见 openai_generic_client.py 注释。
+    # Graphiti 内部 LLM 抽取实体/关系，单独用 DeepSeek。
+    # 原因：Graphiti 在 json_object 模式下会把 schema 注入 prompt，
+    # 要求 LLM 严格返回 {"extracted_entities": [...]}。
+    # StepFun 的 step-3.7-flash 对此格式遵循性不足，常返回 {"entities": [...]} 导致 Pydantic 校验失败。
+    # DeepSeek 对结构化输出的遵循性更好，且你已有 DeepSeek API key。
+    # 主推理管线（reasoning/）仍用 config.gen_llm（StepFun），互不影响。
+    graphiti_llm_cfg = getattr(config, "verify_llm", config.gen_llm)
+    print(f"[DEBUG] Graphiti LLM: model={graphiti_llm_cfg.model}, base_url={graphiti_llm_cfg.base_url}")
     openai_client = openai.AsyncOpenAI(
-        api_key=config.gen_llm.api_key,
-        base_url=config.gen_llm.base_url,
+        api_key=graphiti_llm_cfg.api_key,
+        base_url=graphiti_llm_cfg.base_url,
     )
     llm_config = LLMConfig(
-        api_key=config.gen_llm.api_key,
-        base_url=config.gen_llm.base_url,
-        model=config.gen_llm.model,
+        api_key=graphiti_llm_cfg.api_key,
+        base_url=graphiti_llm_cfg.base_url,
+        model=graphiti_llm_cfg.model,
     )
     llm_client = OpenAIGenericClient(
         config=llm_config,
